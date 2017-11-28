@@ -34,18 +34,21 @@ var (
 	spinner  []byte
 	validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
 
-	mu         sync.RWMutex
-	itemsMap   = map[string]*entry{}
-	items      = []*entry{}
+	mu sync.RWMutex
+	// For lookup
+	itemsMap = map[string]*entry{}
+	// For rasterizing
+	buckets    = []bucket{}
 	queue      = make(chan *entry, 10240)
 	processing = true
 )
 
 type entry struct {
-	Display string // Display name.
-	Actual  string // Absolute path to cached file.
-	Src     string // Absolute path to source file.
-	lang    string // cache of prefered language.
+	Rel    string // Resource name.
+	Base   string // Display name without relpath.
+	Actual string // Absolute path to cached file.
+	Src    string // Absolute path to source file.
+	lang   string // cache of prefered language.
 
 	// Mutable
 	Info        *vid.Info
@@ -72,6 +75,11 @@ func (e *entry) getInfo() (*vid.Info, error) {
 	return v, nil
 }
 
+type bucket struct {
+	Dir   string
+	Items []*entry
+}
+
 func init() {
 	var err error
 	if favicon, err = base64.StdEncoding.DecodeString(faviconRaw); err != nil {
@@ -80,6 +88,26 @@ func init() {
 	if spinner, err = base64.StdEncoding.DecodeString(spinnerRaw); err != nil {
 		panic(err)
 	}
+}
+
+// shouldRefresh returns if the file list should auto-refresh.
+//
+// Must be called with mu.RLock().
+func shouldRefresh() bool {
+	if processing {
+		// Still loading metadata.
+		return true
+	}
+	for _, b := range buckets {
+		for _, v := range b.Items {
+			if v.Transcoding {
+				// Refresh the page every few seconds until there's no transcoding
+				// happening.
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func getWd() string {
@@ -115,26 +143,14 @@ func serveRoot(w http.ResponseWriter, req *http.Request) {
 	data := struct {
 		Title         string
 		ShouldRefresh bool
-		Files         []*entry
+		Buckets       []bucket
 	}{
-		Title: "serve-mp4",
-		Files: items,
+		Title:   "serve-mp4",
+		Buckets: buckets,
 	}
 	mu.RLock()
 	defer mu.RUnlock()
-	if processing {
-		// Still loading metadata.
-		data.ShouldRefresh = true
-	} else {
-		for _, v := range items {
-			if v.Transcoding {
-				// Refresh the page every few seconds until there's no transcoding
-				// happening.
-				data.ShouldRefresh = true
-				break
-			}
-		}
-	}
+	data.ShouldRefresh = shouldRefresh()
 	if err := listing.Execute(w, data); err != nil {
 		log.Printf("root template: %v", err)
 	}
@@ -270,6 +286,7 @@ func serveMetadata(w http.ResponseWriter, req *http.Request) {
 func enumerate(root, cache string, lang string) error {
 	mu.Lock()
 	defer mu.Unlock()
+	b := map[string][]*entry{}
 	l := len(root) + 1
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if len(path) <= l {
@@ -294,19 +311,35 @@ func enumerate(root, cache string, lang string) error {
 			return nil
 		}
 		display := src[:len(src)-len(ext)]
-		rel := display + ".mp4"
-		e := &entry{Display: display, Actual: filepath.Join(cache, rel), Src: path, lang: lang}
+		e := &entry{
+			Rel:    strings.Replace(display+".mp4", string(filepath.Separator), "/", -1),
+			Base:   filepath.Base(display),
+			Actual: filepath.Join(cache, display+".mp4"),
+			Src:    path,
+			lang:   lang,
+		}
 		// For now force transcoding so -movflags +faststart is guaranteed.
 		//if rel == src {
 		if i, err := os.Stat(e.Actual); err == nil && i.Size() > 0 {
 			e.Cached = true
 		}
-		items = append(items, e)
-		itemsMap[rel] = e
+		itemsMap[e.Rel] = e
+		b[filepath.Dir(e.Rel)] = append(b[filepath.Dir(e.Rel)], e)
 		return nil
 	})
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Display < items[j].Display
+
+	// Split into buckets.
+	for name, items := range b {
+		if name != "" {
+			name += "/"
+		}
+		buckets = append(buckets, bucket{Dir: name, Items: items})
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].Rel < items[j].Rel
+		})
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		return buckets[i].Dir < buckets[j].Dir
 	})
 	return err
 }
@@ -360,13 +393,20 @@ func mainImpl() error {
 	if err = enumerate(root, *cacheDir, *lang); err != nil {
 		return err
 	}
-	log.Printf("Found %d files", len(items))
+	total := 0
+	for _, b := range buckets {
+		total += len(b.Items)
+	}
+	log.Printf("Found %d files", total)
 
 	// Preload Info for all files.
 	go func() {
-		for _, e := range items {
-			if _, err := e.getInfo(); err != nil {
-				log.Printf("%v", err)
+		// TODO(maruel): Locking.
+		for _, b := range buckets {
+			for _, e := range b.Items {
+				if _, err := e.getInfo(); err != nil {
+					log.Printf("%v", err)
+				}
 			}
 		}
 		mu.Lock()

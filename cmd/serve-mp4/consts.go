@@ -26,16 +26,15 @@ const (
 	display: inline;
 }
 </style>
-{{range .Files}}
-	- {{if .Cached -}}
-		<a href="get/{{.Display}}.mp4">{{.Display}}</a>
-	{{- else if .Transcoding -}}
-		{{.Display}} – <em>Transcoding</em><img src=spinner.gif style="height:1em" />
-	{{- else -}}
-		{{.Display}} – <form action="transcode" method=POST class="form-btn">
-			<button type="submit" name="file" value="{{.Display}}.mp4" class="btn-link">Transcode</button>
-		</form>
-	{{- end}} – <a href="metadata/{{.Display}}.mp4">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
+{{range .Buckets}}<a href="#{{.Dir}}" id={{.Dir}}>{{.Dir}}</a><br>
+	{{- range .Items}} - {{if .Cached -}}
+			<a href="get/{{.Rel}}">{{.Base}}</a>
+		{{- else if .Transcoding -}}
+			{{.Base}} – <em>Transcoding</em><img src=spinner.gif style="height:1em" />
+		{{- else -}}
+			{{.Base}} – <form action="transcode" method=POST class="form-btn"><button type="submit" name="file" value="{{.Rel}}" class="btn-link">Transcode</button></form>
+		{{- end}} – <a href="metadata/{{.Rel}}">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
+{{end}}<br>
 {{- end}}
 `
 
