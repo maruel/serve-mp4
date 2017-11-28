@@ -98,10 +98,22 @@ type FfprobeFormat struct {
 	Tags           map[string]string
 }
 
+// FfprobeChapter is a chapter description as output by ffprobe.
+type FfprobeChapter struct {
+	ID        int
+	TimeBase  string `json:"time_base"`
+	Start     int
+	StartTime string `json:"start_time"`
+	End       int
+	EndTime   string `json:"end_time"`
+	Tags      map[string]string
+}
+
 // FfprobeResult is the raw output of ffprobe.
 type FfprobeResult struct {
-	Streams []FfprobeStream
-	Format  FfprobeFormat
+	Streams  []FfprobeStream
+	Chapters []FfprobeChapter
+	Format   FfprobeFormat
 }
 
 /* In case we need to debug the output.
@@ -123,12 +135,12 @@ func IdentifyVeryRaw(src string) (map[string]interface{}, error) {
 //
 // lang shall be the preferred language, e.g. "eng" or "fre".
 func Identify(src string, lang string) (*Info, error) {
-	out := &Info{}
-	c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", src)
+	c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", src)
 	raw, err := c.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("Identify(%s): %v\n%s", src, err, raw)
 	}
+	out := &Info{}
 	if err = json.Unmarshal(raw, &out.Raw); err != nil {
 		return nil, fmt.Errorf("Identify(%s): %v", src, err)
 	}
