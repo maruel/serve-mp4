@@ -126,7 +126,11 @@ func serveTranscode(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	rel := req.FormValue("file")
-	root := "/"
+	root := req.Referer()
+	if root == "" {
+		http.Error(w, "Need a referred", http.StatusBadRequest)
+		return
+	}
 
 	mu.RLock()
 	e := itemsMap[rel]
