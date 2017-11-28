@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kr/pretty"
 	"github.com/maruel/interrupt"
 	"github.com/maruel/serve-dir/loghttp"
 	"github.com/maruel/serve-mp4/vid"
@@ -44,12 +45,31 @@ type entry struct {
 	Display string // Display name.
 	Actual  string // Absolute path to cached file.
 	Src     string // Absolute path to source file.
-	lang    string
+	lang    string // cache of prefered language.
 
 	// Mutable
 	Info        *vid.Info
 	Cached      bool
 	Transcoding bool
+}
+
+// getInfo lazy loads e.Info.
+func (e *entry) getInfo() (*vid.Info, error) {
+	mu.RLock()
+	v := e.Info
+	mu.RUnlock()
+	if v != nil {
+		return v, nil
+	}
+	v, err := vid.Identify(e.Src, e.lang)
+	if err != nil {
+		// TODO(maruel): Signal to not repeatedly analyze the file.
+		return nil, err
+	}
+	mu.Lock()
+	e.Info = v
+	mu.Unlock()
+	return v, nil
 }
 
 func init() {
@@ -152,8 +172,8 @@ func serveTranscode(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	v, err := vid.Identify(e.Src, e.lang)
-	if err != nil {
+	if _, err := e.getInfo(); err != nil {
+		// TODO(maruel): Return a failure.
 		log.Printf("%v", err)
 		return
 	}
@@ -165,7 +185,6 @@ func serveTranscode(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	e.Transcoding = true
-	e.Info = v
 	mu.Unlock()
 
 	queue <- e
@@ -215,6 +234,37 @@ func serveMP4(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	mu.RUnlock()
+}
+
+func serveMetadata(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "GET" {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !strings.HasPrefix(req.URL.Path, "/metadata/") {
+		log.Printf("root")
+		http.Error(w, "Not found", 404)
+		return
+	}
+	rel := req.URL.Path[len("/metadata/"):]
+	mu.RLock()
+	e := itemsMap[rel]
+	mu.RUnlock()
+	if e == nil {
+		log.Printf("no item %s", rel)
+		http.Error(w, "Not found", 404)
+		return
+	}
+	v, err := e.getInfo()
+	if err != nil {
+		log.Printf("bad file %v", err)
+		http.Error(w, "Not found", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
+	pretty.Fprintf(w, "%# v\n", v)
 }
 
 func enumerate(root, cache string, lang string) error {
@@ -284,6 +334,7 @@ func mainImpl() error {
 	m.HandleFunc("/spinner.gif", serveSpinner)
 	m.HandleFunc("/transcode", serveTranscode)
 	m.HandleFunc("/get/", serveMP4)
+	m.HandleFunc("/metadata/", serveMetadata)
 	m.HandleFunc("/", serveRoot)
 	s := &http.Server{
 		Addr:           ln.Addr().String(),
@@ -314,14 +365,9 @@ func mainImpl() error {
 	// Preload Info for all files.
 	go func() {
 		for _, e := range items {
-			v, err := vid.Identify(e.Src, *lang)
-			if err != nil {
+			if _, err := e.getInfo(); err != nil {
 				log.Printf("%v", err)
-				continue
 			}
-			mu.Lock()
-			e.Info = v
-			mu.Unlock()
 		}
 		mu.Lock()
 		processing = false

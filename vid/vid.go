@@ -25,71 +25,76 @@ type Info struct {
 	AudioIndex int
 	AudioCodec string
 	AudioLang  string
-	Src        string
 	Raw        FfprobeResult
+}
+
+// FfprobeStream is one stream in the video container as output by ffprobe.
+type FfprobeStream struct {
+	// Both
+	Index          int
+	CodecName      string `json:"codec_name"`
+	CodecLongName  string `json:"codec_long_name"`
+	Profile        string
+	CodecType      string `json:"codec_type"`
+	CodecTimeBase  string `json:"codec_time_base"`
+	CodecTagString string `json:"codec_tag_string"`
+	CodecTag       string `json:"codec_tag"`
+	RFrameRate     string `json:"r_frame_rate"`
+	AvgFrameRate   string `json:"avg_frame_rate"`
+	TimeBase       string `json:"time_base"`
+	StartPts       int    `json:"start_pts"`
+	StartTime      string `json:"start_time"`
+	DurationTs     int    `json:"duration_ts"`
+	Duration       string
+	BitRate        string `json:"bit_rate"`
+	NbFrames       string `json:"nb_frames"`
+	Disposition    map[string]int
+	Tags           map[string]string
+
+	// Video
+	Width              int
+	Height             int
+	CodecWidth         int    `json:"codec_width"`
+	CodecHeight        int    `json:"codec_height"`
+	HasBFrames         int    `json:"has_b_frames"`
+	SampleAspectRatio  string `json:"sample_aspect_ratio"`
+	DisplayAspectRatio string `json:"display_aspect_ratio"`
+	PixFmt             string `json:"pix_fmt"`
+	Level              int
+	ChromaLocation     string `json:"chroma_location"`
+	Refs               int
+	IsAvc              string `json:"is_avc"`
+	NalLengthSize      string `json:"nal_length_size"`
+	BitsPerRawSample   string `json:"bits_per_raw_sample"`
+
+	// Audio
+	SampleFmt     string `json:"sample_fmt"`
+	SampleRate    string `json:"sample_rate"`
+	Channels      int
+	ChannelLayout string `json:"channel_layout"`
+	BitsPerSample int    `json:"bits_per_sample"`
+	MaxBitRate    string `json:"max_bit_rate"`
+}
+
+// FfprobeFormat is the detected file format as output by ffprobe.
+type FfprobeFormat struct {
+	Filename       string
+	NbStreams      int    `json:"nb_streams"`
+	NbPrograms     int    `json:"nb_programs"`
+	FormatName     string `json:"format_name"`
+	FormatLongName string `json:"format_long_name"`
+	StartTime      string `json:"start_time"`
+	Duration       string
+	Size           string
+	BitRate        string `json:"bit_rate"`
+	ProbeScore     int    `json:"probe_score"`
+	Tags           map[string]string
 }
 
 // FfprobeResult is the raw output of ffprobe.
 type FfprobeResult struct {
-	Streams []struct {
-		// Both
-		Index          int
-		CodecName      string `json:"codec_name"`
-		CodecLongName  string `json:"codec_long_name"`
-		Profile        string
-		CodecType      string `json:"codec_type"`
-		CodecTimeBase  string `json:"codec_time_base"`
-		CodecTagString string `json:"codec_tag_string"`
-		CodecTag       string `json:"codec_tag"`
-		RFrameRate     string `json:"r_frame_rate"`
-		AvgFrameRate   string `json:"avg_frame_rate"`
-		TimeBase       string `json:"time_base"`
-		StartPts       int    `json:"start_pts"`
-		StartTime      string `json:"start_time"`
-		DurationTs     int    `json:"duration_ts"`
-		Duration       string
-		BitRate        string `json:"bit_rate"`
-		NbFrames       string `json:"nb_frames"`
-		Disposition    map[string]int
-		Tags           map[string]string
-
-		// Video
-		Width              int
-		Height             int
-		CodecWidth         int    `json:"codec_width"`
-		CodecHeight        int    `json:"codec_height"`
-		HasBFrames         int    `json:"has_b_frames"`
-		SampleAspectRatio  string `json:"sample_aspect_ratio"`
-		DisplayAspectRatio string `json:"display_aspect_ratio"`
-		PixFmt             string `json:"pix_fmt"`
-		Level              int
-		ChromaLocation     string `json:"chroma_location"`
-		Refs               int
-		IsAvc              string `json:"is_avc"`
-		NalLengthSize      string `json:"nal_length_size"`
-		BitsPerRawSample   string `json:"bits_per_raw_sample"`
-
-		// Audio
-		SampleFmt     string `json:"sample_fmt"`
-		SampleRate    string `json:"sample_rate"`
-		Channels      int
-		ChannelLayout string `json:"channel_layout"`
-		BitsPerSample int    `json:"bits_per_sample"`
-		MaxBitRate    string `json:"max_bit_rate"`
-	}
-	Format struct {
-		Filename       string
-		NbStreams      int    `json:"nb_streams"`
-		NbPrograms     int    `json:"nb_programs"`
-		FormatName     string `json:"format_name"`
-		FormatLongName string `json:"format_long_name"`
-		StartTime      string `json:"start_time"`
-		Duration       string
-		Size           string
-		BitRate        string `json:"bit_rate"`
-		ProbeScore     int    `json:"probe_score"`
-		Tags           map[string]string
-	}
+	Streams []FfprobeStream
+	Format  FfprobeFormat
 }
 
 /* In case we need to debug the output.
@@ -111,7 +116,7 @@ func IdentifyVeryRaw(src string) (map[string]interface{}, error) {
 //
 // lang shall be the preferred language, e.g. "eng" or "fre".
 func Identify(src string, lang string) (*Info, error) {
-	out := &Info{Src: src}
+	out := &Info{}
 	c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", src)
 	raw, err := c.CombinedOutput()
 	if err != nil {

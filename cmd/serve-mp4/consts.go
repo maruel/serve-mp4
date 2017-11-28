@@ -35,9 +35,7 @@ const (
 		{{.Display}} – <form action="transcode" method=POST class="form-btn">
 			<button type="submit" name="file" value="{{.Display}}.mp4" class="btn-link">Transcode</button>
 		</form>
-	{{- end}} {{if .Info -}}
-		– {{.Info.Duration}}
-	{{- end}}<br>
+	{{- end}} – <a href="metadata/{{.Display}}.mp4">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
 {{- end}}
 `
 
