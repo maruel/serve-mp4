@@ -361,6 +361,10 @@ func (c *catalog) enumerateEntries() []string {
 		}
 		rel := path[prefix:]
 		if info.IsDir() {
+			if strings.ToLower(filepath.Base(path)) == "video_ts" {
+				c.addFile(rel)
+				return filepath.SkipDir
+			}
 			dirs = append(dirs, rel)
 			return nil
 		}

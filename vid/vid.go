@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,10 +31,92 @@ type Info struct {
 	Raw        ffmpeg.ProbeResult
 }
 
+func getFiles(d string) []string {
+	f, err := os.Open(d)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(0)
+	return names
+}
+
+func findCaseInsensitive(items []string, item string) string {
+	for _, n := range items {
+		if strings.ToLower(n) == item {
+			return n
+		}
+	}
+	return ""
+}
+
+// dvdChapters returns the start time of each chapter.
+//
+// Uses dvdxchap; http://ogmrip.sourceforge.net/
+// dvdxchap is included in Debian package ogmtools.
+func dvdChapters(src string) []time.Duration {
+	raw, err := exec.Command("dvdxchap", src).CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	// Assume the output is always in order (it always is?).
+	var chapters []time.Duration
+	for _, l := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(l, "CHAPTER") {
+			continue
+		}
+		keyval := strings.SplitN(l, "=", 2)
+		if len(keyval) != 2 {
+			continue
+		}
+		if strings.HasSuffix(keyval[0], "NAME") {
+			// It's always "Chapter NN"
+			continue
+		}
+		// Format looks like: 00:05:00.201
+		tparts := strings.Split(keyval[1], ":")
+		h, _ := strconv.Atoi(tparts[0])
+		m, _ := strconv.Atoi(tparts[1])
+		sparts := strings.Split(tparts[2], ".")
+		s, _ := strconv.Atoi(sparts[0])
+		ms, _ := strconv.Atoi(sparts[1])
+		t := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second + time.Duration(ms)*time.Millisecond
+		chapters = append(chapters, t)
+	}
+	return chapters
+}
+
+// guessDVD determines if it is a DVD.
+func guessDVD(src string) string {
+	video_ts := findCaseInsensitive(getFiles(src), "video_ts")
+	if video_ts == "" {
+		return src
+	}
+	p := filepath.Join(src, video_ts)
+	files := getFiles(p)
+	video_ts_vob := findCaseInsensitive(files, "video_ts.vob")
+	if video_ts_vob == "" {
+		return src
+	}
+
+	var vob []string
+	for _, f := range files {
+		if strings.HasSuffix(strings.ToLower(f), ".vob") {
+			vob = append(vob, filepath.Join(p, f))
+		}
+	}
+	// It's fine because video_ts.vob < vts_01_0.vob
+	sort.Strings(vob)
+	return "concat:" + strings.Join(vob, "|")
+}
+
 // Identify runs ffprobe on a file and analyzes its output.
 //
 // lang shall be the preferred language, e.g. "eng" or "fre".
 func Identify(src string, lang string) (*Info, error) {
+	src = guessDVD(src)
+	// "-probesize", "16G", "-analyzeduration", "16G",
+	//c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", src)
 	out := &Info{}
 	if err := ffmpeg.Probe(src, &out.Raw); err != nil {
 		return nil, err
@@ -154,7 +239,7 @@ func (d Device) supportedVideo(codec string) bool {
 	case "h265":
 		return d == ChromeCastUltra
 	default:
-		// mpeg4, msmpeg4v3, svq3, wmv1
+		// mpeg1video, mpeg2video, mpeg4, msmpeg4v3, svq3, wmv1
 		return false
 	}
 }
@@ -189,6 +274,7 @@ func (d Device) ToContainer() string {
 //
 // progress will be updated with progress information.
 func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int)) error {
+	src = guessDVD(src)
 	args := []string{
 		"-i", src,
 		"-f", "mp4",
@@ -217,6 +303,10 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 		case ChromeOS:
 			// The file is meant to be stored on a device. Keep it small.
 			args = append(args, "-preset", "slow", "-crf", "21")
+		}
+		if false {
+			// Do it for DVDs.
+			args = append(args, "-vf", "yadif")
 		}
 	}
 
