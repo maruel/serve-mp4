@@ -31,7 +31,7 @@ const (
 	{{- range .Items}} - {{if .Cached -}}
 			<a href="get/{{.Rel}}">{{.Base}}</a>
 		{{- else if .Transcoding -}}
-			{{.Base}} – <img src=spinner.gif style="height:1em" />
+			{{.Base}} – {{.Percent}} <img src=spinner.gif style="height:1em" />
 		{{- else -}}
 		{{.Base}} – <form action="transcode" method=POST class="form-btn"><button type="submit" name="file" value="{{.Rel}}"><img src=favicon.ico style="height:1em" /></button></form>
 		{{- end}} – <a href="metadata/{{.Rel}}">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
