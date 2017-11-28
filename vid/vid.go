@@ -39,17 +39,18 @@ type FfprobeStream struct {
 	CodecTimeBase  string `json:"codec_time_base"`
 	CodecTagString string `json:"codec_tag_string"`
 	CodecTag       string `json:"codec_tag"`
-	RFrameRate     string `json:"r_frame_rate"`
-	AvgFrameRate   string `json:"avg_frame_rate"`
-	TimeBase       string `json:"time_base"`
-	StartPts       int    `json:"start_pts"`
-	StartTime      string `json:"start_time"`
-	DurationTs     int    `json:"duration_ts"`
-	Duration       string
-	BitRate        string `json:"bit_rate"`
-	NbFrames       string `json:"nb_frames"`
-	Disposition    map[string]int
-	Tags           map[string]string
+
+	RFrameRate   string `json:"r_frame_rate"`
+	AvgFrameRate string `json:"avg_frame_rate"`
+	TimeBase     string `json:"time_base"`
+	StartPts     int    `json:"start_pts"`
+	StartTime    string `json:"start_time"`
+	DurationTs   int    `json:"duration_ts"`
+	Duration     string
+	BitRate      string `json:"bit_rate"`
+	NbFrames     string `json:"nb_frames"`
+	Disposition  map[string]int
+	Tags         map[string]string
 
 	// Video
 	Width              int
@@ -62,6 +63,7 @@ type FfprobeStream struct {
 	PixFmt             string `json:"pix_fmt"`
 	Level              int
 	ChromaLocation     string `json:"chroma_location"`
+	FieldOrder         string `json:"field_order"`
 	Refs               int
 	IsAvc              string `json:"is_avc"`
 	NalLengthSize      string `json:"nal_length_size"`
@@ -73,6 +75,11 @@ type FfprobeStream struct {
 	Channels      int
 	ChannelLayout string `json:"channel_layout"`
 	BitsPerSample int    `json:"bits_per_sample"`
+	DmixMode      string `json:"dmix_mode"`
+	LtrtCmixlev   string `json:"ltrt_cmixlev"`
+	LtrtSurmixlev string `json:"ltrt_surmixlev"`
+	LoroCmixlev   string `json:"loro_cmixlev"`
+	LoroSurmixlev string `json:"loro_surmixlev"`
 	MaxBitRate    string `json:"max_bit_rate"`
 }
 
