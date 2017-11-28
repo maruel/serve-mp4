@@ -26,6 +26,7 @@ import (
 	"github.com/maruel/interrupt"
 	"github.com/maruel/serve-dir/loghttp"
 	"github.com/maruel/serve-mp4/vid"
+	fsnotify "gopkg.in/fsnotify.v1"
 )
 
 var (
@@ -35,14 +36,17 @@ var (
 	validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
 
 	mu sync.RWMutex
-	// For lookup
-	itemsMap = map[string]*entry{}
-	// For rasterizing
-	buckets    = []bucket{}
-	queue      = make(chan *entry, 10240)
-	processing = true
+	// Shared between web server and file crawler:
+	itemsMap      = map[string]*entry{}
+	buckets       []*bucket
+	queue         = make(chan *entry, 10240)
+	updatingInfos = true
+	// For file crawler only:
+	lastUpdate  time.Time
+	watchedDirs []string
 )
 
+// entry is a single video file found.
 type entry struct {
 	Rel    string // Resource name.
 	Base   string // Display name without relpath.
@@ -54,6 +58,7 @@ type entry struct {
 	Info        *vid.Info
 	Cached      bool
 	Transcoding bool
+	cold        bool
 }
 
 // getInfo lazy loads e.Info.
@@ -94,7 +99,7 @@ func init() {
 //
 // Must be called with mu.RLock().
 func shouldRefresh() bool {
-	if processing {
+	if updatingInfos {
 		// Still loading metadata.
 		return true
 	}
@@ -143,7 +148,7 @@ func serveRoot(w http.ResponseWriter, req *http.Request) {
 	data := struct {
 		Title         string
 		ShouldRefresh bool
-		Buckets       []bucket
+		Buckets       []*bucket
 	}{
 		Title:   "serve-mp4",
 		Buckets: buckets,
@@ -283,82 +288,9 @@ func serveMetadata(w http.ResponseWriter, req *http.Request) {
 	pretty.Fprintf(w, "%# v\n", v)
 }
 
-func enumerate(root, cache string, lang string) error {
-	mu.Lock()
-	defer mu.Unlock()
-	b := map[string][]*entry{}
-	l := len(root) + 1
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if len(path) <= l {
-			return nil
-		}
-		src := path[l:]
-		if src[0] == '.' {
-			return filepath.SkipDir
-		}
-		if info.IsDir() {
-			return nil
-		}
-		ext := filepath.Ext(src)
-		found := false
-		for _, i := range validExt {
-			if ext == i {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil
-		}
-		display := src[:len(src)-len(ext)]
-		e := &entry{
-			Rel:    strings.Replace(display+".mp4", string(filepath.Separator), "/", -1),
-			Base:   filepath.Base(display),
-			Actual: filepath.Join(cache, display+".mp4"),
-			Src:    path,
-			lang:   lang,
-		}
-		// For now force transcoding so -movflags +faststart is guaranteed.
-		//if rel == src {
-		if i, err := os.Stat(e.Actual); err == nil && i.Size() > 0 {
-			e.Cached = true
-		}
-		itemsMap[e.Rel] = e
-		b[filepath.Dir(e.Rel)] = append(b[filepath.Dir(e.Rel)], e)
-		return nil
-	})
-
-	// Split into buckets.
-	for name, items := range b {
-		if name != "" {
-			name += "/"
-		}
-		buckets = append(buckets, bucket{Dir: name, Items: items})
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Rel < items[j].Rel
-		})
-	}
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].Dir < buckets[j].Dir
-	})
-	return err
-}
-
-func mainImpl() error {
-	bind := flag.String("http", ":8010", "port and host to bind to")
-	rootDir := flag.String("root", getWd(), "root directory")
-	cacheDir := flag.String("cache", "", "cache directory, defaults to <root>/.cache")
-	lang := flag.String("lang", "fre", "preferred language")
-	timeout := flag.Int("timeout", 24*60*60, "write timeout in seconds; default 24h")
-	maxSize := flag.Int("max_size", 256*1024*1024*1024, "max transfer size; default 256gb")
-	log.SetFlags(log.Lmicroseconds)
-	flag.Parse()
-	if flag.NArg() != 0 {
-		return errors.New("unexpected argument")
-	}
-
-	// Web server.
-	ln, err := net.Listen("tcp", *bind)
+// startServer starts the web server.
+func startServer(bind string) error {
+	ln, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
 	}
@@ -373,72 +305,243 @@ func mainImpl() error {
 		Addr:           ln.Addr().String(),
 		Handler:        &loghttp.Handler{Handler: m},
 		ReadTimeout:    10. * time.Second,
-		WriteTimeout:   time.Duration(*timeout) * time.Second,
-		MaxHeaderBytes: *maxSize,
+		WriteTimeout:   24 * 60 * 60 * time.Second,
+		MaxHeaderBytes: 256 * 1024 * 1024 * 1024,
 	}
-
-	// Files.
-	root, err := filepath.Abs(*rootDir)
-	if err != nil {
-		return err
-	}
-	if *cacheDir == "" {
-		*cacheDir = filepath.Join(root, ".cache")
-	}
-	if i, err := os.Stat(*cacheDir); err != nil || !i.IsDir() {
-		if err := os.Mkdir(*cacheDir, 0777); err != nil {
-			return err
-		}
-	}
-	if err = enumerate(root, *cacheDir, *lang); err != nil {
-		return err
-	}
-	total := 0
-	for _, b := range buckets {
-		total += len(b.Items)
-	}
-	log.Printf("Found %d files", total)
-
-	// Preload Info for all files.
-	go func() {
-		// TODO(maruel): Locking.
-		for _, b := range buckets {
-			for _, e := range b.Items {
-				if _, err := e.getInfo(); err != nil {
-					log.Printf("%v", err)
-				}
-			}
-		}
-		mu.Lock()
-		processing = false
-		mu.Unlock()
-		log.Printf("Done pre-processing")
-	}()
-
-	var muTranscode sync.Mutex
-	go func() {
-		for e := range queue {
-			if e == nil {
-				break
-			}
-			muTranscode.Lock()
-			err := vid.Transcode(e.Src, e.Actual, e.Info, "")
-			muTranscode.Unlock()
-
-			mu.Lock()
-			e.Transcoding = false
-			e.Cached = err == nil
-			mu.Unlock()
-		}
-	}()
 	go s.Serve(ln)
 	log.Printf("Listening on %s", s.Addr)
+	return nil
+}
 
-	interrupt.HandleCtrlC()
-	err = WatchFile()
+//
+
+func isValidExt(ext string) bool {
+	for _, i := range validExt {
+		if ext == i {
+			return true
+		}
+	}
+	return false
+}
+
+// preloadInfos preloads all Info for all entry.
+func preloadInfos(stamp time.Time) {
+	i := 0
+	j := -1
+	for {
+		mu.RLock()
+		if stamp != lastUpdate {
+			mu.RUnlock()
+			log.Printf("A new refresh happened; stopping pre-processing early")
+			return
+		}
+		for i < len(buckets) {
+			j++
+			if j < len(buckets[i].Items) {
+				break
+			}
+			j = -1
+			i++
+		}
+		if i == len(buckets) {
+			mu.RUnlock()
+			break
+		}
+		e := buckets[i].Items[j]
+		mu.RUnlock()
+
+		if _, err := e.getInfo(); err != nil {
+			log.Printf("%v", err)
+		}
+	}
+	mu.Lock()
+	updatingInfos = false
+	mu.Unlock()
+	log.Printf("Done pre-processing")
+}
+
+// handleFile is called from os.Walk(root) from enumerateEntries.
+func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err error) error {
+	if err != nil || len(path) <= prefix {
+		return err
+	}
+	src := path[prefix:]
+	if src[0] == '.' {
+		return filepath.SkipDir
+	}
+	ext := filepath.Ext(src)
+	if info.IsDir() || !isValidExt(ext) {
+		return nil
+	}
+	display := src[:len(src)-len(ext)]
+	rel := strings.Replace(display+".mp4", string(filepath.Separator), "/", -1)
+	if e, ok := itemsMap[rel]; ok {
+		e.cold = false
+		return nil
+	}
+
+	e := &entry{
+		Rel:    rel,
+		Base:   filepath.Base(display),
+		Actual: filepath.Join(cache, display+".mp4"),
+		Src:    path,
+		lang:   lang,
+	}
+	// For now force transcoding so -movflags +faststart is guaranteed.
+	// TODO(maruel): In practice we'd want to identify if if already with
+	// faststart, do not copy.
+	if i, err := os.Stat(e.Actual); err == nil && i.Size() > 0 {
+		e.Cached = true
+	}
+	itemsMap[e.Rel] = e
+	return nil
+}
+
+// enumerateEntries enumerates or reenumerates the tree.
+//
+// Calls preloadInfos() as a separate asynchronous goroutine.
+func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string) error {
+	// Keep a writer lock for the duration of the enumeration.
+	mu.Lock()
+	defer mu.Unlock()
+	updatingInfos = true
+	prefix := len(root) + 1
+	for _, e := range itemsMap {
+		e.cold = true
+	}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		return handleFile(prefix, cache, lang, path, info, err)
+	})
+
+	newBuckets := map[string][]*entry{}
+	for name, e := range itemsMap {
+		if e.cold {
+			// File was deleted.
+			delete(itemsMap, name)
+		}
+		newBuckets[filepath.Dir(e.Rel)] = append(newBuckets[filepath.Dir(e.Rel)], e)
+	}
+	buckets = nil
+	// Split into buckets.
+	dirs := map[string]bool{}
+	for _, d := range watchedDirs {
+		dirs[d] = false
+	}
+	for name, items := range newBuckets {
+		if name != "" {
+			name += "/"
+		}
+		dirs[filepath.Dir(items[0].Src)] = true
+		buckets = append(buckets, &bucket{Dir: name, Items: items})
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].Rel < items[j].Rel
+		})
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		return buckets[i].Dir < buckets[j].Dir
+	})
+	log.Printf("Found %d files", len(itemsMap))
+
+	// Compare dirs with watchedDirs. Removes deleted directory, watch new ones.
+	// This is done with the mu lock.
+	watchedDirs = nil
+	for d, w := range dirs {
+		if w {
+			if err = watcher.Add(d); err != nil {
+				return err
+			}
+			log.Printf("Watching %s", d)
+			watchedDirs = append(watchedDirs, d)
+		} else {
+			if err = watcher.Remove(d); err != nil {
+				return err
+			}
+			log.Printf("Unwatching %s", d)
+		}
+	}
+
+	lastUpdate = time.Now()
+	if err != nil {
+		updatingInfos = false
+	} else {
+		go preloadInfos(lastUpdate)
+	}
+	return err
+}
+
+// handleRefresh handles the events from refresh that are triggered via
+// fsnotify.Watcher.
+func handleRefresh(refresh <-chan bool, watcher *fsnotify.Watcher, root, cache, lang string) {
+	for {
+		<-refresh
+		log.Printf("Will refresh in 10s")
+		delay := time.After(10 * time.Second)
+		for {
+			select {
+			case <-refresh:
+			case <-delay:
+				break
+			}
+		}
+		if err := enumerateEntries(watcher, root, cache, lang); err != nil {
+			// TODO(maruel): dirs.
+			log.Printf("failed to refresh files")
+		}
+	}
+}
+
+// setupFiles do the first enumeration and starts a routine to update file
+// metadata.
+func setupFiles(watcher *fsnotify.Watcher, root, cache, lang string) (chan<- bool, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	if cache == "" {
+		cache = filepath.Join(root, ".cache")
+	}
+	if i, err := os.Stat(cache); err != nil || !i.IsDir() {
+		if err := os.Mkdir(cache, 0777); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := enumerateEntries(watcher, root, cache, lang); err != nil {
+		return nil, err
+	}
+
+	refresh := make(chan bool, 1000)
+	go handleRefresh(refresh, watcher, root, cache, lang)
+	return refresh, nil
+}
+
+//
+
+type transcodingQueue struct {
+	mu sync.Mutex
+}
+
+func (t *transcodingQueue) run() {
+	for e := range queue {
+		if e == nil {
+			break
+		}
+		t.mu.Lock()
+		err := vid.Transcode(e.Src, e.Actual, e.Info, "")
+		t.mu.Unlock()
+
+		mu.Lock()
+		e.Transcoding = false
+		e.Cached = err == nil
+		mu.Unlock()
+	}
+}
+
+func (t *transcodingQueue) stop() {
+	// Flush the pending items in the transcoding queue, wait for the current
+	// transcoding to complete, return.
 	log.Printf("shutting down")
-	stop := false
-	for !stop {
+	for stop := false; !stop; {
 		select {
 		case <-queue:
 		default:
@@ -447,9 +550,79 @@ func mainImpl() error {
 			break
 		}
 	}
-	muTranscode.Lock()
-	muTranscode.Unlock()
-	return err
+	t.mu.Lock()
+	t.mu.Unlock()
+}
+
+//
+
+func watchFiles(watcher *fsnotify.Watcher, refresh chan<- bool) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(exePath)
+	if err != nil {
+		return err
+	}
+	mod0 := fi.ModTime()
+	if err = watcher.Add(exePath); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-interrupt.Channel:
+			return err
+		case err = <-watcher.Errors:
+			return err
+		case e := <-watcher.Events:
+			log.Printf("fsnotify: %s %s", e.Name, e.Op)
+			if e.Name == exePath {
+				if fi, err = os.Stat(exePath); err == nil && !fi.ModTime().Equal(mod0) {
+					// Time to restart.
+					return nil
+				}
+				continue
+			}
+			refresh <- true
+		}
+	}
+}
+
+//
+
+func mainImpl() error {
+	bind := flag.String("http", ":8010", "port and host to bind to")
+	rootDir := flag.String("root", getWd(), "root directory")
+	cacheDir := flag.String("cache", "", "cache directory, defaults to <root>/.cache")
+	lang := flag.String("lang", "fre", "preferred language")
+	log.SetFlags(log.Lmicroseconds)
+	flag.Parse()
+	if flag.NArg() != 0 {
+		return errors.New("unexpected argument")
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
+
+	refresh, err := setupFiles(watcher, *rootDir, *cacheDir, *lang)
+	if err != nil {
+		return err
+	}
+
+	var t transcodingQueue
+	go t.run()
+	defer t.stop()
+
+	if err = startServer(*bind); err != nil {
+		return err
+	}
+
+	interrupt.HandleCtrlC()
+	return watchFiles(watcher, refresh)
 }
 
 func main() {

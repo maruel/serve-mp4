@@ -1,15 +1,18 @@
 # Serves a directory of video files as MP4 over HTTP
 
-Goal: enable playing a local list of video files on a ChromeCast via
-[Caddy](https://caddyserver.com).
+Goal: enable playing a local list of multilingual video files on a ChromeCast
+via [Caddy](https://caddyserver.com).
 
 ![ChromeCast](https://raw.githubusercontent.com/wiki/maruel/serve-mp4/chromecast.png)
 
 Requires [ffmpeg/ffprobe](https://ffmpeg.org/) to be installed. To install, run
 [./cmd/build-ffmpeg.sh](cmd/build-ffmpeg.sh).
 
+By default, it will prefer French audio tracks over others.
+
 ```
 go get -u -v github.com/maruel/serve-mp4/cmd/...
+serve-mp4 -help
 serve-mp4 -root /mnt/foo/bar
 ```
 

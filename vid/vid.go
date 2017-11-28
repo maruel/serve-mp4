@@ -18,8 +18,8 @@ import (
 
 // Info contains the important information about a video.
 type Info struct {
-	Container  string
-	Duration   time.Duration
+	Container  string // Copy of .Raw.Format.FormatName
+	Duration   string // Rounded user readable duration.
 	VideoIndex int
 	VideoCodec string
 	AudioIndex int
@@ -138,7 +138,16 @@ func Identify(src string, lang string) (*Info, error) {
 		if err != nil {
 			return nil, err
 		}
-		out.Duration = d.Round(time.Second)
+		// Round with only two units.
+		if d > time.Hour {
+			out.Duration = d.Round(time.Minute).String()
+		} else if d > time.Minute {
+			out.Duration = d.Round(time.Second).String()
+		} else {
+			out.Duration = d.Round(time.Millisecond).String()
+		}
+		out.Duration = strings.Replace(out.Duration, "m0s", "m", 1)
+		out.Duration = strings.Replace(out.Duration, "h0m", "h", 1)
 	}
 	var audios, videos []int
 	for i, s := range out.Raw.Streams {
@@ -199,7 +208,7 @@ func Transcode(src, dst string, v *Info, progressURL string) error {
 		// https://trac.ffmpeg.org/wiki/HWAccelIntro; on nvidia, use h264_nvenc and h264_cuvid
 		// On Raspbian, use: h264_omx
 		// mpeg4, msmpeg4v3, svq3, wmv1
-		args = append(args, "-c:v", "h264", "-preset", "slow", "-crf", "20")
+		args = append(args, "-c:v", "h264", "-preset", "slow", "-crf", "21")
 	}
 
 	switch v.AudioCodec {

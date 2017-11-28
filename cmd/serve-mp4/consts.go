@@ -9,6 +9,7 @@ const (
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
+<link rel="shortcut icon" type="image/png" href="favicon.ico"/>
 {{if .ShouldRefresh}}<meta http-equiv="refresh" content="5">{{end}}
 <style>
 .btn-link {
@@ -30,16 +31,13 @@ const (
 	{{- range .Items}} - {{if .Cached -}}
 			<a href="get/{{.Rel}}">{{.Base}}</a>
 		{{- else if .Transcoding -}}
-			{{.Base}} – <em>Transcoding</em><img src=spinner.gif style="height:1em" />
+			{{.Base}} – <img src=spinner.gif style="height:1em" />
 		{{- else -}}
-			{{.Base}} – <form action="transcode" method=POST class="form-btn"><button type="submit" name="file" value="{{.Rel}}" class="btn-link">Transcode</button></form>
+		{{.Base}} – <form action="transcode" method=POST class="form-btn"><button type="submit" name="file" value="{{.Rel}}"><img src=favicon.ico style="height:1em" /></button></form>
 		{{- end}} – <a href="metadata/{{.Rel}}">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
 {{end}}<br>
 {{- end}}
 `
-
-	//– {{.Info.VideoCodec}}/{{.Info.AudioCodec}}
-	// {{- if .Info.AudioLang}}/{{.Info.AudioLang}}{{end -}}
 
 	//
 	// python -c "import base64;a=base64.b64encode(open('a','rb').read()); print '\n'.join(a[i:i+70] for i in range(0,len(a),70))"
