@@ -648,15 +648,18 @@ func watchFiles(watcher *fsnotify.Watcher, refresh chan<- bool) error {
 		case err = <-watcher.Errors:
 			return err
 		case e := <-watcher.Events:
-			log.Printf("fsnotify: %s %s", e.Name, e.Op)
-			if e.Name == exePath {
-				if fi, err = os.Stat(exePath); err == nil && !fi.ModTime().Equal(mod0) {
-					// Time to restart.
-					return nil
+			// TODO(maruel): Ignore streams.
+			if e.Op != fsnotify.Write {
+				log.Printf("fsnotify: %s %s", e.Name, e.Op)
+				if e.Name == exePath {
+					if fi, err = os.Stat(exePath); err == nil && !fi.ModTime().Equal(mod0) {
+						// Time to restart.
+						return nil
+					}
+					continue
 				}
-				continue
+				refresh <- true
 			}
-			refresh <- true
 		}
 	}
 }
