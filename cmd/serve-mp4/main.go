@@ -472,7 +472,6 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			if err = watcher.Add(d); err != nil {
 				return err
 			}
-			log.Printf("Watching %s", d)
 			watchedDirs = append(watchedDirs, d)
 		} else {
 			if err = watcher.Remove(d); err != nil {
@@ -481,6 +480,7 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			log.Printf("Unwatching %s", d)
 		}
 	}
+	log.Printf("Watching %d new directories", len(watchedDirs))
 
 	lastUpdate = time.Now()
 	if err != nil {
