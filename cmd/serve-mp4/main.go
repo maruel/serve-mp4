@@ -543,6 +543,47 @@ type transcodingQueue struct {
 	mu sync.Mutex
 }
 
+type progress struct {
+	e *entry
+}
+
+func (p *progress) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	defer req.Body.Close()
+	defer w.WriteHeader(200)
+	l := ""
+	b := make([]byte, 1)
+	for {
+		if n, err := req.Body.Read(b); n != 1 || err != nil {
+			break
+		}
+		if b[0] != '\n' {
+			l += string(b[0])
+			continue
+		}
+		parts := strings.SplitN(l, "=", 2)
+		if len(parts) == 2 {
+			switch parts[0] {
+			case "frame":
+				// TODO(maruel): With the timing information, we could print the
+				// expected remaining time, as compression speed tends to be
+				// "stable enough" to extrapolate.
+				if i, err := strconv.Atoi(parts[1]); err == nil {
+					mu.Lock()
+					p.e.Frame = i
+					mu.Unlock()
+				} else {
+					log.Printf("%s: %v", l, err)
+				}
+			case "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_ms", "out_time", "dup_frames", "drop_frames", "speed", "progress":
+				// Known lines. We could handle these if desired.
+			default:
+				// Unknown line. Not a big deal.
+			}
+		}
+		l = ""
+	}
+}
+
 func (t *transcodingQueue) run() {
 	for e := range queue {
 		if e == nil {
@@ -554,46 +595,14 @@ func (t *transcodingQueue) run() {
 			panic(err)
 		}
 		mux := &http.ServeMux{}
-		mux.HandleFunc("/progress", func(w http.ResponseWriter, req *http.Request) {
-			defer req.Body.Close()
-			defer w.WriteHeader(200)
-			l := ""
-			b := make([]byte, 1)
-			for {
-				if n, err := req.Body.Read(b); n != 1 || err != nil {
-					break
-				}
-				if b[0] != '\n' {
-					l += string(b[0])
-					continue
-				}
-				parts := strings.SplitN(l, "=", 2)
-				if len(parts) == 2 {
-					switch parts[0] {
-					case "frame":
-						// TODO(maruel): With the timing information, we could print the
-						// expected remaining time, as compression speed tends to be
-						// "stable enough" to extrapolate.
-						if i, err := strconv.Atoi(parts[1]); err == nil {
-							mu.Lock()
-							e.Frame = i
-							mu.Unlock()
-						} else {
-							log.Printf("%s: %v", l, err)
-						}
-					case "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_ms", "out_time", "dup_frames", "drop_frames", "speed", "progress":
-						// Known lines. We could handle these if desired.
-					default:
-						// Unknown line. Not a big deal.
-					}
-				}
-				l = ""
-			}
-		})
+		var p = progress{e: e}
+		mux.Handle("/progress", &p)
 		s := &http.Server{Addr: ln.Addr().String(), Handler: mux}
 		go s.Serve(ln)
 		url := fmt.Sprintf("http://%s/progress", ln.Addr().String())
 
+		// Keeps the lock for the whole process so the serve-mp4 executable doesn't
+		// abruptly interrupt the transcoding.
 		t.mu.Lock()
 		err = vid.Transcode(e.Src, e.Actual, e.Info, url)
 		t.mu.Unlock()
