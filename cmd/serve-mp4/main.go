@@ -7,11 +7,9 @@
 package main
 
 import (
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
-	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -23,29 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kr/pretty"
 	"github.com/maruel/interrupt"
-	"github.com/maruel/serve-dir/loghttp"
 	"github.com/maruel/serve-mp4/vid"
 	fsnotify "gopkg.in/fsnotify.v1"
 )
 
-var (
-	listing  = template.Must(template.New("listing").Parse(listingRaw))
-	favicon  []byte
-	spinner  []byte
-	validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
-
-	mu sync.RWMutex
-	// Shared between web server and file crawler:
-	itemsMap      = map[string]*entry{}
-	buckets       []*bucket
-	queue         = make(chan *entry, 10240)
-	updatingInfos = true
-	// For file crawler only:
-	lastUpdate  time.Time
-	watchedDirs []string
-)
+var validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
 
 // entry is a single video file found.
 type entry struct {
@@ -56,6 +37,7 @@ type entry struct {
 	lang   string // cache of prefered language.
 
 	// Mutable
+	mu          sync.Mutex
 	Info        *vid.Info
 	Cached      bool
 	Transcoding bool
@@ -65,9 +47,9 @@ type entry struct {
 
 // getInfo lazy loads e.Info.
 func (e *entry) getInfo() (*vid.Info, error) {
-	mu.RLock()
+	e.mu.Lock()
 	v := e.Info
-	mu.RUnlock()
+	e.mu.Unlock()
 	if v != nil {
 		return v, nil
 	}
@@ -76,9 +58,9 @@ func (e *entry) getInfo() (*vid.Info, error) {
 		// TODO(maruel): Signal to not repeatedly analyze the file.
 		return nil, err
 	}
-	mu.Lock()
+	e.mu.Lock()
 	e.Info = v
-	mu.Unlock()
+	e.mu.Unlock()
 	return v, nil
 }
 
@@ -87,10 +69,10 @@ func (e *entry) Percent() string {
 	if err != nil {
 		return "N/A"
 	}
-	mu.RLock()
+	e.mu.Lock()
 	f := e.Frame
 	c := e.Cached
-	mu.RUnlock()
+	e.mu.Unlock()
 	if c {
 		return "100%"
 	}
@@ -101,30 +83,38 @@ func (e *entry) Percent() string {
 	return fmt.Sprintf("%3.1f%%", 100.*float32(f)/float32(nb))
 }
 
+type catalog struct {
+	mu sync.RWMutex
+	// Shared between web server and file crawler:
+	itemsMap      map[string]*entry
+	buckets       []*bucket
+	queue         chan *entry
+	updatingInfos bool
+	// For file crawler only:
+	lastUpdate  time.Time
+	watchedDirs []string
+}
+
+var cat = catalog{
+	itemsMap:      map[string]*entry{},
+	queue:         make(chan *entry, 10240),
+	updatingInfos: true,
+}
+
 type bucket struct {
 	Dir   string
 	Items []*entry
-}
-
-func init() {
-	var err error
-	if favicon, err = base64.StdEncoding.DecodeString(faviconRaw); err != nil {
-		panic(err)
-	}
-	if spinner, err = base64.StdEncoding.DecodeString(spinnerRaw); err != nil {
-		panic(err)
-	}
 }
 
 // shouldRefresh returns if the file list should auto-refresh.
 //
 // Must be called with mu.RLock().
 func shouldRefresh() bool {
-	if updatingInfos {
+	if cat.updatingInfos {
 		// Still loading metadata.
 		return true
 	}
-	for _, b := range buckets {
+	for _, b := range cat.buckets {
 		for _, v := range b.Items {
 			if v.Transcoding {
 				// Refresh the page every few seconds until there's no transcoding
@@ -139,200 +129,6 @@ func shouldRefresh() bool {
 func getWd() string {
 	wd, _ := os.Getwd()
 	return wd
-}
-
-func serveStatic(w http.ResponseWriter, req *http.Request, b []byte, t string) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", t)
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-	w.Write(b)
-}
-
-func serveFavicon(w http.ResponseWriter, req *http.Request) {
-	serveStatic(w, req, favicon, "image/x-icon")
-}
-
-func serveSpinner(w http.ResponseWriter, req *http.Request) {
-	serveStatic(w, req, spinner, "image/gif")
-}
-
-func serveRoot(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "private")
-	data := struct {
-		Title         string
-		ShouldRefresh bool
-		Buckets       []*bucket
-	}{
-		Title:   "serve-mp4",
-		Buckets: buckets,
-	}
-	mu.RLock()
-	defer mu.RUnlock()
-	data.ShouldRefresh = shouldRefresh()
-	if err := listing.Execute(w, data); err != nil {
-		log.Printf("root template: %v", err)
-	}
-}
-
-func serveTranscode(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "POST" {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	rel := req.FormValue("file")
-	root := req.Referer()
-	if root == "" {
-		http.Error(w, "Need a referred", http.StatusBadRequest)
-		return
-	}
-
-	mu.RLock()
-	e := itemsMap[rel]
-	need := false
-	if e != nil {
-		need = !e.Cached && !e.Transcoding
-	}
-	mu.RUnlock()
-
-	if e == nil {
-		log.Printf("no item %s", rel)
-		http.Error(w, "Not found", 404)
-		return
-	}
-
-	// At that point, always redirect to root.
-	defer http.Redirect(w, req, root, http.StatusFound)
-	if !need {
-		return
-	}
-
-	if _, err := e.getInfo(); err != nil {
-		// TODO(maruel): Return a failure.
-		log.Printf("%v", err)
-		return
-	}
-
-	mu.Lock()
-	if e.Transcoding == true || e.Cached == true {
-		// Oops.
-		mu.Unlock()
-		return
-	}
-	e.Transcoding = true
-	mu.Unlock()
-
-	queue <- e
-}
-
-func serveMP4(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	if !strings.HasPrefix(req.URL.Path, "/get/") {
-		log.Printf("root")
-		http.Error(w, "Not found", 404)
-		return
-	}
-	rel := req.URL.Path[len("/get/"):]
-	mu.RLock()
-	e := itemsMap[rel]
-	if e == nil {
-		log.Printf("no item %s", rel)
-		http.Error(w, "Not found", 404)
-	} else if !e.Cached {
-		log.Printf("not cached %s", rel)
-		http.Error(w, "not cached", 404)
-	} else if e.Transcoding {
-		log.Printf("still transcoding %s", rel)
-		http.Error(w, "still transcoding", 404)
-	} else {
-		mu.RUnlock()
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-		f, err := os.Open(e.Actual)
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		http.ServeContent(w, req, filepath.Base(e.Actual), info.ModTime(), f)
-		log.Printf("done serving %s", e.Actual)
-		return
-	}
-	mu.RUnlock()
-}
-
-func serveMetadata(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	if !strings.HasPrefix(req.URL.Path, "/metadata/") {
-		log.Printf("root")
-		http.Error(w, "Not found", 404)
-		return
-	}
-	rel := req.URL.Path[len("/metadata/"):]
-	mu.RLock()
-	e := itemsMap[rel]
-	mu.RUnlock()
-	if e == nil {
-		log.Printf("no item %s", rel)
-		http.Error(w, "Not found", 404)
-		return
-	}
-	v, err := e.getInfo()
-	if err != nil {
-		log.Printf("bad file %v", err)
-		http.Error(w, "Not found", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-	pretty.Fprintf(w, "%# v\n", v)
-}
-
-// startServer starts the web server.
-func startServer(bind string) error {
-	ln, err := net.Listen("tcp", bind)
-	if err != nil {
-		return err
-	}
-	m := &http.ServeMux{}
-	m.HandleFunc("/favicon.ico", serveFavicon)
-	m.HandleFunc("/spinner.gif", serveSpinner)
-	m.HandleFunc("/transcode", serveTranscode)
-	m.HandleFunc("/get/", serveMP4)
-	m.HandleFunc("/metadata/", serveMetadata)
-	m.HandleFunc("/", serveRoot)
-	s := &http.Server{
-		Addr:           ln.Addr().String(),
-		Handler:        &loghttp.Handler{Handler: m},
-		ReadTimeout:    10. * time.Second,
-		WriteTimeout:   24 * 60 * 60 * time.Second,
-		MaxHeaderBytes: 256 * 1024 * 1024 * 1024,
-	}
-	go s.Serve(ln)
-	log.Printf("Listening on %s", s.Addr)
-	// TODO(maruel): Return io.Closer?
-	return nil
 }
 
 //
@@ -351,34 +147,34 @@ func preloadInfos(stamp time.Time) {
 	i := 0
 	j := -1
 	for {
-		mu.RLock()
-		if stamp != lastUpdate {
-			mu.RUnlock()
+		cat.mu.RLock()
+		if stamp != cat.lastUpdate {
+			cat.mu.RUnlock()
 			log.Printf("A new refresh happened; stopping pre-processing early")
 			return
 		}
-		for i < len(buckets) {
+		for i < len(cat.buckets) {
 			j++
-			if j < len(buckets[i].Items) {
+			if j < len(cat.buckets[i].Items) {
 				break
 			}
 			j = -1
 			i++
 		}
-		if i == len(buckets) {
-			mu.RUnlock()
+		if i == len(cat.buckets) {
+			cat.mu.RUnlock()
 			break
 		}
-		e := buckets[i].Items[j]
-		mu.RUnlock()
+		e := cat.buckets[i].Items[j]
+		cat.mu.RUnlock()
 
 		if _, err := e.getInfo(); err != nil {
 			log.Printf("%v", err)
 		}
 	}
-	mu.Lock()
-	updatingInfos = false
-	mu.Unlock()
+	cat.mu.Lock()
+	cat.updatingInfos = false
+	cat.mu.Unlock()
 	log.Printf("Done pre-processing")
 }
 
@@ -397,7 +193,7 @@ func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err erro
 	}
 	display := src[:len(src)-len(ext)]
 	rel := strings.Replace(display+".mp4", string(filepath.Separator), "/", -1)
-	if e, ok := itemsMap[rel]; ok {
+	if e, ok := cat.itemsMap[rel]; ok {
 		e.cold = false
 		return nil
 	}
@@ -415,7 +211,7 @@ func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err erro
 	if i, err := os.Stat(e.Actual); err == nil && i.Size() > 0 {
 		e.Cached = true
 	}
-	itemsMap[e.Rel] = e
+	cat.itemsMap[e.Rel] = e
 	return nil
 }
 
@@ -424,11 +220,11 @@ func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err erro
 // Calls preloadInfos() as a separate asynchronous goroutine.
 func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string) error {
 	// Keep a writer lock for the duration of the enumeration.
-	mu.Lock()
-	defer mu.Unlock()
-	updatingInfos = true
+	cat.mu.Lock()
+	defer cat.mu.Unlock()
+	cat.updatingInfos = true
 	prefix := len(root) + 1
-	for _, e := range itemsMap {
+	for _, e := range cat.itemsMap {
 		e.cold = true
 	}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -436,17 +232,17 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 	})
 
 	newBuckets := map[string][]*entry{}
-	for name, e := range itemsMap {
+	for name, e := range cat.itemsMap {
 		if e.cold {
 			// File was deleted.
-			delete(itemsMap, name)
+			delete(cat.itemsMap, name)
 		}
 		newBuckets[filepath.Dir(e.Rel)] = append(newBuckets[filepath.Dir(e.Rel)], e)
 	}
-	buckets = nil
+	cat.buckets = nil
 	// Split into buckets.
 	dirs := map[string]bool{}
-	for _, d := range watchedDirs {
+	for _, d := range cat.watchedDirs {
 		dirs[d] = false
 	}
 	for name, items := range newBuckets {
@@ -454,25 +250,25 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			name += "/"
 		}
 		dirs[filepath.Dir(items[0].Src)] = true
-		buckets = append(buckets, &bucket{Dir: name, Items: items})
+		cat.buckets = append(cat.buckets, &bucket{Dir: name, Items: items})
 		sort.Slice(items, func(i, j int) bool {
 			return items[i].Rel < items[j].Rel
 		})
 	}
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].Dir < buckets[j].Dir
+	sort.Slice(cat.buckets, func(i, j int) bool {
+		return cat.buckets[i].Dir < cat.buckets[j].Dir
 	})
-	log.Printf("Found %d files", len(itemsMap))
+	log.Printf("Found %d files", len(cat.itemsMap))
 
-	// Compare dirs with watchedDirs. Removes deleted directory, watch new ones.
-	// This is done with the mu lock.
-	watchedDirs = nil
+	// Compare dirs with cat.watchedDirs. Removes deleted directory, watch new
+	// ones.  This is done with the mu lock.
+	cat.watchedDirs = nil
 	for d, w := range dirs {
 		if w {
 			if err = watcher.Add(d); err != nil {
 				return err
 			}
-			watchedDirs = append(watchedDirs, d)
+			cat.watchedDirs = append(cat.watchedDirs, d)
 		} else {
 			if err = watcher.Remove(d); err != nil {
 				return err
@@ -480,13 +276,13 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			log.Printf("Unwatching %s", d)
 		}
 	}
-	log.Printf("Watching %d new directories", len(watchedDirs))
+	log.Printf("Watching %d new directories", len(cat.watchedDirs))
 
-	lastUpdate = time.Now()
+	cat.lastUpdate = time.Now()
 	if err != nil {
-		updatingInfos = false
+		cat.updatingInfos = false
 	} else {
-		go preloadInfos(lastUpdate)
+		go preloadInfos(cat.lastUpdate)
 	}
 	return err
 }
@@ -568,9 +364,9 @@ func (p *progress) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				// expected remaining time, as compression speed tends to be
 				// "stable enough" to extrapolate.
 				if i, err := strconv.Atoi(parts[1]); err == nil {
-					mu.Lock()
+					cat.mu.Lock()
 					p.e.Frame = i
-					mu.Unlock()
+					cat.mu.Unlock()
 				} else {
 					log.Printf("%s: %v", l, err)
 				}
@@ -585,7 +381,7 @@ func (p *progress) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (t *transcodingQueue) run() {
-	for e := range queue {
+	for e := range cat.queue {
 		if e == nil {
 			break
 		}
@@ -611,10 +407,10 @@ func (t *transcodingQueue) run() {
 			panic(err2)
 		}
 
-		mu.Lock()
+		cat.mu.Lock()
 		e.Transcoding = false
 		e.Cached = err == nil
-		mu.Unlock()
+		cat.mu.Unlock()
 	}
 }
 
@@ -624,9 +420,9 @@ func (t *transcodingQueue) stop() {
 	log.Printf("shutting down")
 	for stop := false; !stop; {
 		select {
-		case <-queue:
+		case <-cat.queue:
 		default:
-			queue <- nil
+			cat.queue <- nil
 			stop = true
 			break
 		}
