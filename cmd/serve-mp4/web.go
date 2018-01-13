@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/kr/pretty"
 	"github.com/maruel/serve-dir/loghttp"
@@ -49,11 +48,10 @@ func startServer(bind string) error {
 	m.HandleFunc("/metadata/", serveMetadata)
 	m.HandleFunc("/", serveRoot)
 	s := &http.Server{
-		Addr:           ln.Addr().String(),
-		Handler:        &loghttp.Handler{Handler: m},
-		ReadTimeout:    10. * time.Second,
-		WriteTimeout:   24 * 60 * 60 * time.Second,
-		MaxHeaderBytes: 256 * 1024 * 1024 * 1024,
+		Addr:    ln.Addr().String(),
+		Handler: &loghttp.Handler{Handler: m},
+		//ReadTimeout:    10. * time.Second,
+		//WriteTimeout:   24 * 60 * 60 * time.Second,
 	}
 	go s.Serve(ln)
 	log.Printf("Listening on %s", s.Addr)
