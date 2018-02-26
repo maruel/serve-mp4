@@ -2,21 +2,21 @@
 // Use of this source code is governed under the Apache License, Version 2.0
 // that can be found in the LICENSE file.
 
-// vid identifies and transcodes video files via ffprobe and ffmpeg.
+// Package vid identifies and transcodes video files via ffprobe and ffmpeg.
 package vid
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/maruel/serve-mp4/vid/ffmpeg"
 )
 
-// Info contains the important information about a video.
+// Info contains the analyzed information about a video.
 type Info struct {
 	Container  string // Copy of .Raw.Format.FormatName
 	Duration   string // Rounded user readable duration.
@@ -25,124 +25,16 @@ type Info struct {
 	AudioIndex int
 	AudioCodec string
 	AudioLang  string
-	Raw        FfprobeResult
+	Raw        ffmpeg.ProbeResult
 }
-
-// FfprobeStream is one stream in the video container as output by ffprobe.
-type FfprobeStream struct {
-	// Both
-	Index          int
-	CodecName      string `json:"codec_name"`
-	CodecLongName  string `json:"codec_long_name"`
-	Profile        string
-	CodecType      string `json:"codec_type"`
-	CodecTimeBase  string `json:"codec_time_base"`
-	CodecTagString string `json:"codec_tag_string"`
-	CodecTag       string `json:"codec_tag"`
-
-	RFrameRate   string `json:"r_frame_rate"`
-	AvgFrameRate string `json:"avg_frame_rate"`
-	TimeBase     string `json:"time_base"`
-	StartPts     int    `json:"start_pts"`
-	StartTime    string `json:"start_time"`
-	DurationTs   int    `json:"duration_ts"`
-	Duration     string
-	BitRate      string `json:"bit_rate"`
-	NbFrames     string `json:"nb_frames"`
-	Disposition  map[string]int
-	Tags         map[string]string
-
-	// Video
-	Width              int
-	Height             int
-	CodecWidth         int    `json:"codec_width"`
-	CodecHeight        int    `json:"codec_height"`
-	HasBFrames         int    `json:"has_b_frames"`
-	SampleAspectRatio  string `json:"sample_aspect_ratio"`
-	DisplayAspectRatio string `json:"display_aspect_ratio"`
-	PixFmt             string `json:"pix_fmt"`
-	Level              int
-	ChromaLocation     string `json:"chroma_location"`
-	FieldOrder         string `json:"field_order"`
-	Refs               int
-	IsAvc              string `json:"is_avc"`
-	NalLengthSize      string `json:"nal_length_size"`
-	BitsPerRawSample   string `json:"bits_per_raw_sample"`
-
-	// Audio
-	SampleFmt     string `json:"sample_fmt"`
-	SampleRate    string `json:"sample_rate"`
-	Channels      int
-	ChannelLayout string `json:"channel_layout"`
-	BitsPerSample int    `json:"bits_per_sample"`
-	DmixMode      string `json:"dmix_mode"`
-	LtrtCmixlev   string `json:"ltrt_cmixlev"`
-	LtrtSurmixlev string `json:"ltrt_surmixlev"`
-	LoroCmixlev   string `json:"loro_cmixlev"`
-	LoroSurmixlev string `json:"loro_surmixlev"`
-	MaxBitRate    string `json:"max_bit_rate"`
-}
-
-// FfprobeFormat is the detected file format as output by ffprobe.
-type FfprobeFormat struct {
-	Filename       string
-	NbStreams      int    `json:"nb_streams"`
-	NbPrograms     int    `json:"nb_programs"`
-	FormatName     string `json:"format_name"`
-	FormatLongName string `json:"format_long_name"`
-	StartTime      string `json:"start_time"`
-	Duration       string
-	Size           string
-	BitRate        string `json:"bit_rate"`
-	ProbeScore     int    `json:"probe_score"`
-	Tags           map[string]string
-}
-
-// FfprobeChapter is a chapter description as output by ffprobe.
-type FfprobeChapter struct {
-	ID        int
-	TimeBase  string `json:"time_base"`
-	Start     int
-	StartTime string `json:"start_time"`
-	End       int
-	EndTime   string `json:"end_time"`
-	Tags      map[string]string
-}
-
-// FfprobeResult is the raw output of ffprobe.
-type FfprobeResult struct {
-	Streams  []FfprobeStream
-	Chapters []FfprobeChapter
-	Format   FfprobeFormat
-}
-
-/* In case we need to debug the output.
-func IdentifyVeryRaw(src string) (map[string]interface{}, error) {
-	out := map[string]interface{}{}
-	c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", src)
-	raw, err := c.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("IdentifyRaw(%s): %v\n%s", src, err, raw)
-	}
-	if err = json.Unmarshal(raw, out); err != nil {
-		return nil, fmt.Errorf("IdentifyRaw(%s): %v", src, err)
-	}
-	return out, nil
-}
-*/
 
 // Identify runs ffprobe on a file and analyzes its output.
 //
 // lang shall be the preferred language, e.g. "eng" or "fre".
 func Identify(src string, lang string) (*Info, error) {
-	c := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", src)
-	raw, err := c.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Identify(%s): %v\n%s", src, err, raw)
-	}
 	out := &Info{}
-	if err = json.Unmarshal(raw, &out.Raw); err != nil {
-		return nil, fmt.Errorf("Identify(%s): %v", src, err)
+	if err := ffmpeg.Probe(src, &out.Raw); err != nil {
+		return nil, err
 	}
 	out.Container = out.Raw.Format.FormatName
 	if out.Raw.Format.Duration != "" {
@@ -193,68 +85,104 @@ func Identify(src string, lang string) (*Info, error) {
 	return out, nil
 }
 
-// Transcode transcodes a video file for playback on a ChromeCast.
+// Device is a type of device to target.
+type Device int
+
+const (
+	// ChromeCast supports AC3 passthrough, or can decodes AAC.
+	ChromeCast Device = iota + 1
+	// ChromeCastUltra supports h265.
+	ChromeCastUltra
+	// ChromeOS decodes AAC, but doesn't support AC3.
+	ChromeOS
+)
+
+// supportedVideo returns true if this device supports this video codec.
+func (d Device) supportedVideo(codec string) bool {
+	switch codec {
+	case "mpeg1video", "mpeg2video", "h264":
+		return true
+	case "vp8":
+		return true
+	case "h265":
+		return d == ChromeCastUltra
+	default:
+		// mpeg4, msmpeg4v3, svq3, wmv1
+		return false
+	}
+}
+
+// supportedAudio returns true if this device supports this audio codec.
+func (d Device) supportedAudio(codec string) bool {
+	switch codec {
+	case "ac3", "dts":
+		// ChromeOS doesn't support these.
+		return d != ChromeOS
+	// TODO(maruel): Confirm they all work.
+	case "aac", "mp2", "mp3":
+		return true
+	default:
+		// pcm_u8, wmav2
+		return false
+	}
+}
+
+// Transcode transcodes a video file for playback on the device as MP4.
 //
-// TODO(maruel): Need to assert all the file formats.
-func Transcode(src, dst string, v *Info, progressURL string) error {
+// The generated file is a mp4 file with 'faststart' for fast seeking.
+//
+// The src file must have been analyzed via Identify() first.
+//
+// progress will be updated with progress information.
+func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int)) error {
 	args := []string{
-		"-hide_banner",
 		"-i", src,
 		"-f", "mp4",
+		// https://trac.ffmpeg.org/wiki/Encode/AAC#ProgressiveDownload
 		"-movflags", "+faststart",
 		// TODO(maruel): Confirm.
 		"-map", fmt.Sprintf("0:%d", v.VideoIndex),
 		"-map", fmt.Sprintf("0:%d", v.AudioIndex),
-		// TODO(maruel): (?) "-threads", "16",
 	}
 
-	switch v.VideoCodec {
-	// TODO(maruel): Confirm: "vp8"
-	case "mpeg1video", "mpeg2video", "h264":
-		// Video Copy
+	if d.supportedVideo(v.VideoCodec) {
+		// Video Copy.
 		args = append(args, "-c:v", "copy")
-	default:
-		// Video Transcode
+	} else {
+		// Video Transcode.
 		// https://trac.ffmpeg.org/wiki/Encode/H.264
 		// https://trac.ffmpeg.org/wiki/Encode/H.265; only works with ChromeCast Ultra.
 		// https://trac.ffmpeg.org/wiki/HWAccelIntro; on nvidia, use h264_nvenc and h264_cuvid
 		// On Raspbian, use: h264_omx
-		// mpeg4, msmpeg4v3, svq3, wmv1
 		args = append(args, "-c:v", "h264", "-preset", "slow", "-crf", "21")
 	}
 
-	switch v.AudioCodec {
-	// TODO(maruel): Confirm they all work.
-	case "ac3", "aac", "dts", "mp2", "mp3":
-		// Audio copy
+	if d.supportedAudio(v.AudioCodec) {
+		// Audio copy.
 		args = append(args, "-c:a", "copy")
-	default:
-		// Audio Transcode
-		// pcm_u8, wmav2
-		args = append(args, "-c:a", "aac")
+	} else {
+		// Audio Transcode.
+		// https://trac.ffmpeg.org/wiki/Encode/AAC
+		//args = append(args, "-c:a", "aac")
+		args = append(args, "-c:a", "libfdk_aac", "-vbr", "4")
 	}
 
 	switch v.AudioLang {
 	case "", "und":
 	default:
-		// TODO(maruel): Doesn't work.
+		// TODO(maruel): Doesn't seem to work.
 		args = append(args, "-metadata:s:a:0", fmt.Sprintf("language=%s", v.AudioLang))
 	}
 
-	if progressURL != "" {
-		args = append(args, "-progress", progressURL)
-	}
-
 	args = append(args, dst)
-
-	d := filepath.Dir(dst)
-	if i, err := os.Stat(d); err != nil || !i.IsDir() {
-		if err := os.MkdirAll(d, 0777); err != nil {
+	dir := filepath.Dir(dst)
+	if i, err := os.Stat(dir); err != nil || !i.IsDir() {
+		if err := os.MkdirAll(dir, 0777); err != nil {
 			return fmt.Errorf("Transcode(%s, %s): %v", src, dst, err)
 		}
 	}
 	log.Printf("Transcode(%s) running: ffmpeg %s", src, strings.Join(args, " "))
-	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+	if out, err := ffmpeg.Transcode(args, progress); err != nil {
 		log.Printf("Transcode(%s) = %v\n%s", src, err, out)
 		os.Remove(dst)
 		return fmt.Errorf("Transcode(%s, %s): %v", src, dst, err)
