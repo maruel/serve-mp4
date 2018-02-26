@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,84 +24,6 @@ import (
 )
 
 var validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
-
-// entry is a single video file found.
-type entry struct {
-	Rel    string // Resource name.
-	Base   string // Display name without relpath.
-	Actual string // Absolute path to cached file.
-	Src    string // Absolute path to source file.
-	lang   string // cache of prefered language.
-
-	// Mutable
-	mu          sync.Mutex
-	Info        *vid.Info
-	Cached      bool
-	Transcoding bool
-	Frame       int
-	cold        bool
-}
-
-// getInfo lazy loads e.Info.
-func (e *entry) getInfo() (*vid.Info, error) {
-	e.mu.Lock()
-	v := e.Info
-	e.mu.Unlock()
-	if v != nil {
-		return v, nil
-	}
-	v, err := vid.Identify(e.Src, e.lang)
-	if err != nil {
-		// TODO(maruel): Signal to not repeatedly analyze the file.
-		return nil, err
-	}
-	e.mu.Lock()
-	e.Info = v
-	e.mu.Unlock()
-	return v, nil
-}
-
-func (e *entry) Percent() string {
-	v, err := e.getInfo()
-	if err != nil {
-		return "N/A"
-	}
-	e.mu.Lock()
-	f := e.Frame
-	c := e.Cached
-	e.mu.Unlock()
-	if c {
-		return "100%"
-	}
-	nb, err := strconv.Atoi(v.Raw.Streams[v.VideoIndex].NbFrames)
-	if err != nil {
-		return "N/A"
-	}
-	return fmt.Sprintf("%3.1f%%", 100.*float32(f)/float32(nb))
-}
-
-type catalog struct {
-	mu sync.RWMutex
-	// Shared between web server and file crawler:
-	itemsMap      map[string]*entry
-	buckets       []*bucket
-	queue         chan *entry
-	updatingInfos bool
-	// For file crawler only:
-	lastUpdate  time.Time
-	watchedDirs []string
-}
-
-var cat = catalog{
-	itemsMap:      map[string]*entry{},
-	queue:         make(chan *entry, 10240),
-	updatingInfos: true,
-}
-
-type bucket struct {
-	Dir   string
-	Items []*entry
-}
 
 // shouldRefresh returns if the file list should auto-refresh.
 //
