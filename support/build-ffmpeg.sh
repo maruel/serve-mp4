@@ -11,8 +11,11 @@ set -eu
 
 cd "$(dirname $0)"
 
+
 function prerequisites {
-  sudo apt install autoconf \
+  sudo apt install \
+      autoconf \
+      asciidoc \
       automake \
       build-essential \
       cmake \
@@ -25,19 +28,28 @@ function clean {
   rm -rf FFMpeg nasm x264
 }
 
+function checkout_or_fetch {
+  if [ -d $2 ]; then
+    cd $2
+    git fetch
+  else
+    git clone $1 $2
+    cd $2
+  fi
+}
+
 function install_nasm {
   if command -v nasm >/dev/null 2>&1 ; then
     echo "- Found $(nasm -v)"
-    return 0
+    #return 0
   fi
-  git clone git://repo.or.cz/nasm.git
-  cd nasm
+  checkout_or_fetch git://repo.or.cz/nasm.git nasm
   # Use the latest release as nasm uses proper git tag.
   # 'nasm-2.13.01' as of this writting.
   git checkout $(git tag | grep '^nasm-' | grep -v rc | sort -h | tail -n 1)
   ./autogen.sh
   ./configure
-  make -j
+  make -j all manpages
   sudo make install
   hash -r
   cd ..
@@ -47,16 +59,15 @@ function install_nasm {
 function install_x264 {
   if [ -f /usr/local/lib/libx264.so ]; then
     echo "- Found x264"
-    return 0
+    #return 0
   fi
-  git clone git://git.videolan.org/x264.git
-  cd x264
+  checkout_or_fetch git://git.videolan.org/x264.git x264
   # x264 doesn't use git tag, so ¯\_(ツ)_/¯. 'stable' is a bit old.
   # git log origin/stable..origin/master
   # -b stable
-  # This checkout dates from June 2017 and seems to work. Hardcode so the build
-  # process is reproducible.
-  git checkout ba24899b0bf23345921da022f7a51e0c57dbe73d
+  # Hardcode so the build process is reproducible.
+  # 7d0ff22e8 is from Jan 2018.
+  git checkout 7d0ff22e8c96de126be9d3de4952edd6d1b75a8c
   ./configure --enable-static --enable-shared
   make -j
   sudo make install
@@ -68,14 +79,13 @@ function install_x264 {
 function install_ffmpeg {
   if command -v ffmpeg >/dev/null 2>&1 ; then
     if command -v ffprobe >/dev/null 2>&1 ; then
-      echo "- Found FFMpeg"
-      return 0
+      echo "- Found $(ffmpeg -version | head -n 1)"
+      #return 0
     fi
   fi
-  git clone https://github.com/ffmpeg/FFMpeg
-  cd FFMpeg
+  checkout_or_fetch https://github.com/ffmpeg/FFMpeg FFMpeg
   # Use the latest release as FFMpeg uses proper git tag.
-  # 'n3.4' as of this writting.
+  # 'n3.4.2' as of this writting.
   git checkout $(git tag | grep -v dev | grep '^n' | sort -h | tail -n 1)
 
   # TODO(maruel): On Raspbian, we want to use the OMX encoder for performance
