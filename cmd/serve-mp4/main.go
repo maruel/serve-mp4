@@ -179,6 +179,8 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 	})
 	log.Printf("Found %d files", len(cat.itemsMap))
 
+	// TODO(maruel): Populate subdirs
+
 	// Compare dirs with cat.watchedDirs. Removes deleted directory, watch new
 	// ones.  This is done with the mu lock.
 	cat.watchedDirs = nil

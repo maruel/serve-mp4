@@ -71,8 +71,9 @@ func (e *entry) getInfo() (*vid.Info, error) {
 
 // bucket is all files in a directory.
 type bucket struct {
-	Dir   string
-	Items []*entry
+	Dir     string
+	Items   []*entry
+	Subdirs []string
 }
 
 type catalog struct {
