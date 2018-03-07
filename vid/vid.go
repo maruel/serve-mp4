@@ -90,10 +90,41 @@ type Device int
 
 const (
 	// ChromeCast supports AC3 passthrough, or can decodes AAC.
+	//
+	// https://developers.google.com/cast/docs/media
+	//
+	// It doesn't support older formats like MPEG4 and awkwards ones like XVID.
+	//
+	// Containers:        AAC,MP3,MP4,WAV,WebM
+	// Video:             H264,VP8
+	// Audio:             AAC,FLAC,MP3,Opus,Vorbis,WAV
+	// Audio passthrough: AC3
 	ChromeCast Device = iota + 1
+
 	// ChromeCastUltra supports h265.
+	//
+	// https://developers.google.com/cast/docs/media
+	//
+	// It doesn't support older formats like MPEG4 and awkwards ones like XVID.
+	//
+	// Containers:        AAC,MP3,MP4,WAV,WebM
+	// Video:             H264,H265,VP8,VP9
+	// Audio:             AAC,FLAC,MP3,Opus,Vorbis,WAV
+	// Audio passthrough: AC3
 	ChromeCastUltra
-	// ChromeOS decodes AAC, but doesn't support AC3.
+
+	// ChromeOS decodes AAC and awkward formats like XVID, but doesn't support
+	// AC3 at all.
+	//
+	// https://support.google.com/chromebook/answer/183093
+	//
+	//  Container | Video Codec     | Audio Codec
+	//  ogv       | Theora          | --
+	//  webm      | VP8,VP9         | Opus,Vorbis
+	//  mp4       | H264,MPEG4      | --
+	//  mov       | H264,MPEG4      | --
+	//  avi       | DVIX,MPEG4,XVID | MP3
+	//  3gp       | H264,MPEG4      | AAC,AMR-NB
 	ChromeOS
 )
 
@@ -163,8 +194,9 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 	} else {
 		// Audio Transcode.
 		// https://trac.ffmpeg.org/wiki/Encode/AAC
-		//args = append(args, "-c:a", "aac")
-		args = append(args, "-c:a", "libfdk_aac", "-vbr", "4")
+		args = append(args, "-c:a", "aac")
+		// TODO(maruel): Complained -vbr is unrecognized.
+		//args = append(args, "-c:a", "libfdk_aac", "-vbr", "4")
 	}
 
 	switch v.AudioLang {

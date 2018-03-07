@@ -170,6 +170,12 @@ func serveChromeOS(w http.ResponseWriter, req *http.Request) {
 	cat.mu.RUnlock()
 }
 
+// serveChromeCast handles when the user intents to stream to a ChromeCast.
+//
+// In practice, we could make a full app? It's very geared towards Android/iOS.
+// https://developers.google.com/cast/docs/caf_receiver_overview
+//
+// It's 5$ to get the ID: https://cast.google.com/publish/#/signup
 func serveChromeCast(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)

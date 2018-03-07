@@ -274,7 +274,8 @@ func (t *transcodingQueue) run() {
 		// Keeps the lock for the whole process so the serve-mp4 executable doesn't
 		// abruptly interrupt the transcoding.
 		t.mu.Lock()
-		err := vid.ChromeCast.TranscodeMP4(e.Src, e.Actual, e.Info, p)
+		//err := vid.ChromeCast.TranscodeMP4(e.Src, e.Actual, e.Info, p)
+		err := vid.ChromeOS.TranscodeMP4(e.Src, e.Actual, e.Info, p)
 		t.mu.Unlock()
 
 		cat.mu.Lock()
