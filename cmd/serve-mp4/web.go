@@ -42,11 +42,12 @@ func init() {
 }
 
 // startServer starts the web server.
-func startServer(bind string) error {
+func startServer(bind string, c *catalog) error {
 	ln, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
 	}
+	s := &server{c: c}
 	m := &http.ServeMux{}
 	// Static
 	m.HandleFunc("/cast.svg", serveStatic(casticon, "image/svg+xml"))
@@ -55,22 +56,26 @@ func startServer(bind string) error {
 	m.HandleFunc("/spinner.gif", serveStatic(spinner, "image/gif"))
 	m.HandleFunc("/vlc.svg", serveStatic(vlcicon, "image/svg+xml"))
 	// Retrieval
-	m.HandleFunc("/chromecast/", serveChromeCast)
-	m.HandleFunc("/chromeos/", serveChromeOS)
-	m.HandleFunc("/raw/", serveRaw)
-	m.HandleFunc("/metadata/", serveMetadata)
-	m.HandleFunc("/browse/", serveBrowse)
+	m.HandleFunc("/chromecast/", s.serveChromeCast)
+	m.HandleFunc("/chromeos/", s.serveChromeOS)
+	m.HandleFunc("/raw/", s.serveRaw)
+	m.HandleFunc("/metadata/", s.serveMetadata)
+	m.HandleFunc("/browse/", s.serveBrowse)
 	m.HandleFunc("/", serveRoot)
 	// Action
-	m.HandleFunc("/transcode", serveTranscode)
-	s := &http.Server{
+	m.HandleFunc("/transcode", s.serveTranscode)
+	h := &http.Server{
 		Addr:    ln.Addr().String(),
 		Handler: &loghttp.Handler{Handler: m},
 	}
-	go s.Serve(ln)
-	log.Printf("Listening on %s", s.Addr)
+	go h.Serve(ln)
+	log.Printf("Listening on %s", h.Addr)
 	// TODO(maruel): Return io.Closer?
 	return nil
+}
+
+type server struct {
+	c *catalog
 }
 
 // Static
@@ -89,31 +94,6 @@ func serveStatic(b []byte, t string) http.HandlerFunc {
 
 // Retrieval
 
-func serveBrowse(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	//const prefix = "/browse/"
-	//p :=  req.URL.Path[len(prefix):]
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "private")
-	cat.mu.RLock()
-	defer cat.mu.RUnlock()
-	data := struct {
-		Title         string
-		ShouldRefresh bool
-		Buckets       []*bucket
-	}{
-		Title:   "serve-mp4",
-		Buckets: cat.buckets,
-	}
-	data.ShouldRefresh = shouldRefresh()
-	if err := listing.Execute(w, data); err != nil {
-		log.Printf("root template: %v", err)
-	}
-}
-
 func serveRoot(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -127,27 +107,52 @@ func serveRoot(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "browse/", http.StatusFound)
 }
 
-func serveChromeOS(w http.ResponseWriter, req *http.Request) {
+func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "GET" {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	//const prefix = "/browse/"
+	//p :=  req.URL.Path[len(prefix):]
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private")
+	s.c.mu.RLock()
+	defer s.c.mu.RUnlock()
+	data := struct {
+		Title         string
+		ShouldRefresh bool
+		Buckets       []*bucket
+	}{
+		Title:   "serve-mp4",
+		Buckets: s.c.buckets,
+	}
+	data.ShouldRefresh = s.c.shouldRefresh()
+	if err := listing.Execute(w, data); err != nil {
+		log.Printf("root template: %v", err)
+	}
+}
+
+func (s *server) serveChromeOS(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	const prefix = "/chromecast/"
 	rel := req.URL.Path[len(prefix):]
-	cat.mu.RLock()
-	e := cat.itemsMap[rel]
+	s.c.mu.RLock()
+	e := s.c.itemsMap[rel]
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
 	} else if !e.Cached {
-		cat.mu.RUnlock()
-		doTranscode(w, req, rel)
+		s.c.mu.RUnlock()
+		s.doTranscode(w, req, rel)
 		return
 	} else if e.Transcoding {
 		log.Printf("still transcoding %s", rel)
 		http.Error(w, "still transcoding", 404)
 	} else {
-		cat.mu.RUnlock()
+		s.c.mu.RUnlock()
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 		f, err := os.Open(e.Actual)
@@ -167,7 +172,7 @@ func serveChromeOS(w http.ResponseWriter, req *http.Request) {
 		log.Printf("done serving %s", e.Actual)
 		return
 	}
-	cat.mu.RUnlock()
+	s.c.mu.RUnlock()
 }
 
 // serveChromeCast handles when the user intents to stream to a ChromeCast.
@@ -176,27 +181,27 @@ func serveChromeOS(w http.ResponseWriter, req *http.Request) {
 // https://developers.google.com/cast/docs/caf_receiver_overview
 //
 // It's 5$ to get the ID: https://cast.google.com/publish/#/signup
-func serveChromeCast(w http.ResponseWriter, req *http.Request) {
+func (s *server) serveChromeCast(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	const prefix = "/chromecast/"
 	rel := req.URL.Path[len(prefix):]
-	cat.mu.RLock()
-	e := cat.itemsMap[rel]
+	s.c.mu.RLock()
+	e := s.c.itemsMap[rel]
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
 	} else if !e.Cached {
-		cat.mu.RUnlock()
-		doTranscode(w, req, rel)
+		s.c.mu.RUnlock()
+		s.doTranscode(w, req, rel)
 		return
 	} else if e.Transcoding {
 		log.Printf("still transcoding %s", rel)
 		http.Error(w, "still transcoding", 404)
 	} else {
-		cat.mu.RUnlock()
+		s.c.mu.RUnlock()
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 		f, err := os.Open(e.Actual)
@@ -216,19 +221,19 @@ func serveChromeCast(w http.ResponseWriter, req *http.Request) {
 		log.Printf("done serving %s", e.Actual)
 		return
 	}
-	cat.mu.RUnlock()
+	s.c.mu.RUnlock()
 }
 
-func serveRaw(w http.ResponseWriter, req *http.Request) {
+func (s *server) serveRaw(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	const prefix = "/raw/"
 	rel := req.URL.Path[len(prefix):]
-	cat.mu.RLock()
-	e := cat.itemsMap[rel]
-	cat.mu.RUnlock()
+	s.c.mu.RLock()
+	e := s.c.itemsMap[rel]
+	s.c.mu.RUnlock()
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(rel)))
 	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 	f, err := os.Open(e.Src)
@@ -248,7 +253,7 @@ func serveRaw(w http.ResponseWriter, req *http.Request) {
 	log.Printf("done serving %s", rel)
 }
 
-func serveMetadata(w http.ResponseWriter, req *http.Request) {
+func (s *server) serveMetadata(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
@@ -259,9 +264,9 @@ func serveMetadata(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	rel := req.URL.Path[len("/metadata/"):]
-	cat.mu.RLock()
-	e := cat.itemsMap[rel]
-	cat.mu.RUnlock()
+	s.c.mu.RLock()
+	e := s.c.itemsMap[rel]
+	s.c.mu.RUnlock()
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
@@ -281,7 +286,7 @@ func serveMetadata(w http.ResponseWriter, req *http.Request) {
 
 // Action
 
-func serveTranscode(w http.ResponseWriter, req *http.Request) {
+func (s *server) serveTranscode(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "POST" {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
@@ -292,17 +297,17 @@ func serveTranscode(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Need a referred", http.StatusBadRequest)
 		return
 	}
-	doTranscode(w, req, rel)
+	s.doTranscode(w, req, rel)
 }
 
-func doTranscode(w http.ResponseWriter, req *http.Request, rel string) {
-	cat.mu.RLock()
-	e := cat.itemsMap[rel]
+func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, rel string) {
+	s.c.mu.RLock()
+	e := s.c.itemsMap[rel]
 	need := false
 	if e != nil {
 		need = !e.Cached && !e.Transcoding
 	}
-	cat.mu.RUnlock()
+	s.c.mu.RUnlock()
 
 	if e == nil {
 		log.Printf("no item %s", rel)
@@ -322,14 +327,14 @@ func doTranscode(w http.ResponseWriter, req *http.Request, rel string) {
 		return
 	}
 
-	cat.mu.Lock()
+	s.c.mu.Lock()
 	if e.Transcoding == true || e.Cached == true {
 		// Oops.
-		cat.mu.Unlock()
+		s.c.mu.Unlock()
 		return
 	}
 	e.Transcoding = true
-	cat.mu.Unlock()
+	s.c.mu.Unlock()
 
-	cat.queue <- e
+	s.c.queue <- e
 }

@@ -25,21 +25,10 @@ import (
 
 var validExt = []string{".avi", ".m4v", ".mkv", ".mp4", ".mpeg", ".mpg", ".mov", ".wmv"}
 
-// shouldRefresh returns if the file list should auto-refresh.
-//
-// Must be called with mu.RLock().
-func shouldRefresh() bool {
-	if cat.updatingInfos {
-		// Still loading metadata.
-		return true
-	}
-	for _, b := range cat.buckets {
-		for _, v := range b.Items {
-			if v.Transcoding {
-				// Refresh the page every few seconds until there's no transcoding
-				// happening.
-				return true
-			}
+func isValidExt(ext string) bool {
+	for _, i := range validExt {
+		if ext == i {
+			return true
 		}
 	}
 	return false
@@ -52,53 +41,64 @@ func getWd() string {
 
 //
 
-func isValidExt(ext string) bool {
-	for _, i := range validExt {
-		if ext == i {
-			return true
+// shouldRefresh returns if the file list should auto-refresh.
+//
+// Must be called with mu.RLock().
+func (c *catalog) shouldRefresh() bool {
+	if c.updatingInfos {
+		// Still loading metadata.
+		return true
+	}
+	for _, b := range c.buckets {
+		for _, v := range b.Items {
+			if v.Transcoding {
+				// Refresh the page every few seconds until there's no transcoding
+				// happening.
+				return true
+			}
 		}
 	}
 	return false
 }
 
 // preloadInfos preloads all Info for all entry.
-func preloadInfos(stamp time.Time) {
+func (c *catalog) preloadInfos(stamp time.Time) {
 	i := 0
 	j := -1
 	for {
-		cat.mu.RLock()
-		if stamp != cat.lastUpdate {
-			cat.mu.RUnlock()
+		c.mu.RLock()
+		if stamp != c.lastUpdate {
+			c.mu.RUnlock()
 			log.Printf("A new refresh happened; stopping pre-processing early")
 			return
 		}
-		for i < len(cat.buckets) {
+		for i < len(c.buckets) {
 			j++
-			if j < len(cat.buckets[i].Items) {
+			if j < len(c.buckets[i].Items) {
 				break
 			}
 			j = -1
 			i++
 		}
-		if i == len(cat.buckets) {
-			cat.mu.RUnlock()
+		if i == len(c.buckets) {
+			c.mu.RUnlock()
 			break
 		}
-		e := cat.buckets[i].Items[j]
-		cat.mu.RUnlock()
+		e := c.buckets[i].Items[j]
+		c.mu.RUnlock()
 
 		if _, err := e.getInfo(); err != nil {
 			log.Printf("%v", err)
 		}
 	}
-	cat.mu.Lock()
-	cat.updatingInfos = false
-	cat.mu.Unlock()
+	c.mu.Lock()
+	c.updatingInfos = false
+	c.mu.Unlock()
 	log.Printf("Done pre-processing")
 }
 
 // handleFile is called from os.Walk(root) from enumerateEntries.
-func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err error) error {
+func handleFile(prefix int, cache, lang, path string, info os.FileInfo, c *catalog, err error) error {
 	if err != nil || len(path) <= prefix {
 		return err
 	}
@@ -112,7 +112,7 @@ func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err erro
 	}
 	display := src[:len(src)-len(ext)]
 	rel := strings.Replace(display+".mp4", string(filepath.Separator), "/", -1)
-	if e, ok := cat.itemsMap[rel]; ok {
+	if e, ok := c.itemsMap[rel]; ok {
 		e.cold = false
 		return nil
 	}
@@ -130,38 +130,38 @@ func handleFile(prefix int, cache, lang, path string, info os.FileInfo, err erro
 	if i, err := os.Stat(e.Actual); err == nil && i.Size() > 0 {
 		e.Cached = true
 	}
-	cat.itemsMap[e.Rel] = e
+	c.itemsMap[e.Rel] = e
 	return nil
 }
 
 // enumerateEntries enumerates or reenumerates the tree.
 //
 // Calls preloadInfos() as a separate asynchronous goroutine.
-func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string) error {
+func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string, c *catalog) error {
 	// Keep a writer lock for the duration of the enumeration.
-	cat.mu.Lock()
-	defer cat.mu.Unlock()
-	cat.updatingInfos = true
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updatingInfos = true
 	prefix := len(root) + 1
-	for _, e := range cat.itemsMap {
+	for _, e := range c.itemsMap {
 		e.cold = true
 	}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		return handleFile(prefix, cache, lang, path, info, err)
+		return handleFile(prefix, cache, lang, path, info, c, err)
 	})
 
 	newBuckets := map[string][]*entry{}
-	for name, e := range cat.itemsMap {
+	for name, e := range c.itemsMap {
 		if e.cold {
 			// File was deleted.
-			delete(cat.itemsMap, name)
+			delete(c.itemsMap, name)
 		}
 		newBuckets[filepath.Dir(e.Rel)] = append(newBuckets[filepath.Dir(e.Rel)], e)
 	}
-	cat.buckets = nil
+	c.buckets = nil
 	// Split into buckets.
 	dirs := map[string]bool{}
-	for _, d := range cat.watchedDirs {
+	for _, d := range c.watchedDirs {
 		dirs[d] = false
 	}
 	for name, items := range newBuckets {
@@ -169,27 +169,27 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			name += "/"
 		}
 		dirs[filepath.Dir(items[0].Src)] = true
-		cat.buckets = append(cat.buckets, &bucket{Dir: name, Items: items})
+		c.buckets = append(c.buckets, &bucket{Dir: name, Items: items})
 		sort.Slice(items, func(i, j int) bool {
 			return items[i].Rel < items[j].Rel
 		})
 	}
-	sort.Slice(cat.buckets, func(i, j int) bool {
-		return cat.buckets[i].Dir < cat.buckets[j].Dir
+	sort.Slice(c.buckets, func(i, j int) bool {
+		return c.buckets[i].Dir < c.buckets[j].Dir
 	})
-	log.Printf("Found %d files", len(cat.itemsMap))
+	log.Printf("Found %d files", len(c.itemsMap))
 
 	// TODO(maruel): Populate subdirs
 
-	// Compare dirs with cat.watchedDirs. Removes deleted directory, watch new
+	// Compare dirs with c.watchedDirs. Removes deleted directory, watch new
 	// ones.  This is done with the mu lock.
-	cat.watchedDirs = nil
+	c.watchedDirs = nil
 	for d, w := range dirs {
 		if w {
 			if err = watcher.Add(d); err != nil {
 				return err
 			}
-			cat.watchedDirs = append(cat.watchedDirs, d)
+			c.watchedDirs = append(c.watchedDirs, d)
 		} else {
 			if err = watcher.Remove(d); err != nil {
 				return err
@@ -197,20 +197,20 @@ func enumerateEntries(watcher *fsnotify.Watcher, root, cache string, lang string
 			log.Printf("Unwatching %s", d)
 		}
 	}
-	log.Printf("Watching %d new directories", len(cat.watchedDirs))
+	log.Printf("Watching %d new directories", len(c.watchedDirs))
 
-	cat.lastUpdate = time.Now()
+	c.lastUpdate = time.Now()
 	if err != nil {
-		cat.updatingInfos = false
+		c.updatingInfos = false
 	} else {
-		go preloadInfos(cat.lastUpdate)
+		go c.preloadInfos(c.lastUpdate)
 	}
 	return err
 }
 
 // handleRefresh handles the events from refresh that are triggered via
 // fsnotify.Watcher.
-func handleRefresh(refresh <-chan bool, watcher *fsnotify.Watcher, root, cache, lang string) {
+func handleRefresh(refresh <-chan bool, watcher *fsnotify.Watcher, root, cache, lang string, c *catalog) {
 	for {
 		<-refresh
 		log.Printf("Will refresh in 10s")
@@ -222,7 +222,7 @@ func handleRefresh(refresh <-chan bool, watcher *fsnotify.Watcher, root, cache, 
 				break
 			}
 		}
-		if err := enumerateEntries(watcher, root, cache, lang); err != nil {
+		if err := enumerateEntries(watcher, root, cache, lang, c); err != nil {
 			// TODO(maruel): dirs.
 			log.Printf("failed to refresh files")
 		}
@@ -231,7 +231,7 @@ func handleRefresh(refresh <-chan bool, watcher *fsnotify.Watcher, root, cache, 
 
 // setupFiles do the first enumeration and starts a routine to update file
 // metadata.
-func setupFiles(watcher *fsnotify.Watcher, root, cache, lang string) (chan<- bool, error) {
+func setupFiles(watcher *fsnotify.Watcher, root, cache, lang string, c *catalog) (chan<- bool, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -245,12 +245,12 @@ func setupFiles(watcher *fsnotify.Watcher, root, cache, lang string) (chan<- boo
 		}
 	}
 
-	if err := enumerateEntries(watcher, root, cache, lang); err != nil {
+	if err := enumerateEntries(watcher, root, cache, lang, c); err != nil {
 		return nil, err
 	}
 
 	refresh := make(chan bool, 1000)
-	go handleRefresh(refresh, watcher, root, cache, lang)
+	go handleRefresh(refresh, watcher, root, cache, lang, c)
 	return refresh, nil
 }
 
@@ -258,17 +258,18 @@ func setupFiles(watcher *fsnotify.Watcher, root, cache, lang string) (chan<- boo
 
 type transcodingQueue struct {
 	mu sync.Mutex
+	c  *catalog
 }
 
 func (t *transcodingQueue) run() {
-	for e := range cat.queue {
+	for e := range t.c.queue {
 		if e == nil {
 			break
 		}
 		p := func(frame int) {
-			cat.mu.Lock()
+			t.c.mu.Lock()
 			e.Frame = frame
-			cat.mu.Unlock()
+			t.c.mu.Unlock()
 		}
 
 		// Keeps the lock for the whole process so the serve-mp4 executable doesn't
@@ -278,10 +279,10 @@ func (t *transcodingQueue) run() {
 		err := vid.ChromeOS.TranscodeMP4(e.Src, e.Actual, e.Info, p)
 		t.mu.Unlock()
 
-		cat.mu.Lock()
+		t.c.mu.Lock()
 		e.Transcoding = false
 		e.Cached = err == nil
-		cat.mu.Unlock()
+		t.c.mu.Unlock()
 	}
 }
 
@@ -291,9 +292,9 @@ func (t *transcodingQueue) stop() {
 	log.Printf("shutting down")
 	for stop := false; !stop; {
 		select {
-		case <-cat.queue:
+		case <-t.c.queue:
 		default:
-			cat.queue <- nil
+			t.c.queue <- nil
 			stop = true
 			break
 		}
@@ -359,16 +360,22 @@ func mainImpl() error {
 	}
 	defer watcher.Close()
 
-	refresh, err := setupFiles(watcher, *rootDir, *cacheDir, *lang)
+	cat := catalog{
+		itemsMap:      map[string]*entry{},
+		queue:         make(chan *entry, 10240),
+		updatingInfos: true,
+	}
+
+	refresh, err := setupFiles(watcher, *rootDir, *cacheDir, *lang, &cat)
 	if err != nil {
 		return err
 	}
 
-	var t transcodingQueue
+	t := transcodingQueue{c: &cat}
 	go t.run()
 	defer t.stop()
 
-	if err = startServer(*bind); err != nil {
+	if err = startServer(*bind, &cat); err != nil {
 		return err
 	}
 

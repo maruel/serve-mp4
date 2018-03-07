@@ -76,6 +76,11 @@ type bucket struct {
 	Subdirs []string
 }
 
+type Catalog interface {
+	lookup(rel string) *entry
+	transcode(v vid.Device, e *entry)
+}
+
 type catalog struct {
 	mu sync.RWMutex
 	// Shared between web server and file crawler:
@@ -86,10 +91,4 @@ type catalog struct {
 	// For file crawler only:
 	lastUpdate  time.Time
 	watchedDirs []string
-}
-
-var cat = catalog{
-	itemsMap:      map[string]*entry{},
-	queue:         make(chan *entry, 10240),
-	updatingInfos: true,
 }
