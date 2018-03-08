@@ -128,12 +128,25 @@ const (
 	ChromeOS
 )
 
+const deviceName = "ChromeCastChromeCastUltraChromeOS"
+
+var deviceIndex = [...]uint8{0, 10, 25, 33}
+
+func (i Device) String() string {
+	i -= 1
+	if i < 0 || i >= Device(len(deviceIndex)-1) {
+		return fmt.Sprintf("Device(%d)", i+1)
+	}
+	return deviceName[deviceIndex[i]:deviceIndex[i+1]]
+}
+
 // supportedVideo returns true if this device supports this video codec.
 func (d Device) supportedVideo(codec string) bool {
 	switch codec {
 	case "mpeg1video", "mpeg2video", "h264":
 		return true
 	case "vp8":
+		// TODO(maruel): Depends on the container.
 		return true
 	case "h265":
 		return d == ChromeCastUltra

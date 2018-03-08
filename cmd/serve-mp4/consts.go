@@ -33,17 +33,20 @@ const (
 	background-color: #DDD;
 }
 </style>
-{{range .Buckets}}<a href="/browse/{{.Dir}}" id={{.Dir}}>{{.Dir}}</a><br>
-	{{- range .Items}} - {{.Base}} – {{if .Transcoding -}}
-			{{.Percent}} <img src="/spinner.gif" style="height:1em" />
-		{{- else -}}
-			<div class="downloads {{if not .Cached}}missing{{end}}">
-				<a href="/chromecast/{{.Rel}}"><img src="/cast.svg" style="height:1em" /></a>
-				<a href="/chromeos/{{.Rel}}"><img src="/chromeos.svg" style="height:1em" /></a>
-			</div>
-			<a href="/raw/{{.Rel}}"><img src="/vlc.svg" style="height:1em" /></a>
-		{{- end}} – <a href="/metadata/{{.Rel}}">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
-	{{- end}}<br>
+{{if .Rel}} - <a href="..">Répertoire parent</a><br>{{end}}
+{{- range $name, $e := .Directory.Subdirs}} - <a href="{{$name}}/">{{$name}}/</a><br>
+{{- end -}}
+{{- range $name, $e := .Directory.Items}} - {{$name}} – {{if $e.Transcoding -}}
+		{{$e.Percent}} <img src="/spinner.gif" style="height:1em" />
+	{{- end -}}
+	<div class="downloads">
+		{{$cc := index $e.Cached $.ChromeCast}}
+		{{$co := index $e.Cached $.ChromeOS}}
+		<a href="/chromecast/{{$.Rel}}/{{$name}}" class="{{if not $cc}}missing{{end}}"><img src="/cast.svg" style="height:1em" /></a>
+		<a href="/chromeos/{{$.Rel}}/{{$name}}" class="{{if not $co}}missing{{end}}"><img src="/chromeos.svg" style="height:1em" /></a>
+		<a href="/raw/{{$.Rel}}/{{$name}}"><img src="/vlc.svg" style="height:1em" /></a>
+	</div>
+	 – <a href="/metadata/{{$.Rel}}/{{$name}}">{{if $e.TryInfo -}}{{.TryInfo.Duration}}{{else}}Meta{{end}}</a><br>
 {{- end}}
 `
 	/*

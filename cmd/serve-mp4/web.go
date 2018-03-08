@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/base64"
 	"html/template"
+	"io"
 	"log"
 	"mime"
 	"net"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/kr/pretty"
 	"github.com/maruel/serve-dir/loghttp"
+	"github.com/maruel/serve-mp4/vid"
 )
 
 var (
@@ -42,12 +44,17 @@ func init() {
 }
 
 // startServer starts the web server.
-func startServer(bind string, c *catalog) error {
+func startServer(bind string, c Catalog, t TranscodingQueue) (io.Closer, error) {
 	ln, err := net.Listen("tcp", bind)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	s := &server{c: c}
+	s := &server{
+		c: c,
+		t: t,
+		h: http.Server{Addr: ln.Addr().String()},
+	}
+
 	m := &http.ServeMux{}
 	// Static
 	m.HandleFunc("/cast.svg", serveStatic(casticon, "image/svg+xml"))
@@ -62,20 +69,21 @@ func startServer(bind string, c *catalog) error {
 	m.HandleFunc("/metadata/", s.serveMetadata)
 	m.HandleFunc("/browse/", s.serveBrowse)
 	m.HandleFunc("/", serveRoot)
-	// Action
-	m.HandleFunc("/transcode", s.serveTranscode)
-	h := &http.Server{
-		Addr:    ln.Addr().String(),
-		Handler: &loghttp.Handler{Handler: m},
-	}
-	go h.Serve(ln)
-	log.Printf("Listening on %s", h.Addr)
-	// TODO(maruel): Return io.Closer?
-	return nil
+
+	s.h.Handler = &loghttp.Handler{Handler: m}
+	go s.h.Serve(ln)
+	log.Printf("Listening on %s", s.h.Addr)
+	return s, nil
 }
 
 type server struct {
-	c *catalog
+	c Catalog
+	t TranscodingQueue
+	h http.Server
+}
+
+func (s *server) Close() error {
+	return s.h.Close()
 }
 
 // Static
@@ -112,21 +120,30 @@ func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	//const prefix = "/browse/"
-	//p :=  req.URL.Path[len(prefix):]
+	const prefix = "/browse/"
+	rel := req.URL.Path[len(prefix):]
+	d := s.c.LookupDir(rel)
+	if d == nil {
+		http.Error(w, "Not found", 404)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private")
-	s.c.mu.RLock()
-	defer s.c.mu.RUnlock()
 	data := struct {
 		Title         string
 		ShouldRefresh bool
-		Buckets       []*bucket
+		Directory     *Directory
+		Rel           string
+		ChromeCast    vid.Device
+		ChromeOS      vid.Device
 	}{
-		Title:   "serve-mp4",
-		Buckets: s.c.buckets,
+		Title:         "serve-mp4",
+		ShouldRefresh: d.StillLoading(),
+		Directory:     d,
+		Rel:           rel,
+		ChromeCast:    vid.ChromeCast,
+		ChromeOS:      vid.ChromeOS,
 	}
-	data.ShouldRefresh = s.c.shouldRefresh()
 	if err := listing.Execute(w, data); err != nil {
 		log.Printf("root template: %v", err)
 	}
@@ -137,25 +154,22 @@ func (s *server) serveChromeOS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	const prefix = "/chromecast/"
+	const prefix = "/chromeos/"
 	rel := req.URL.Path[len(prefix):]
-	s.c.mu.RLock()
-	e := s.c.itemsMap[rel]
+	e := s.c.LookupEntry(rel)
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
-	} else if !e.Cached {
-		s.c.mu.RUnlock()
-		s.doTranscode(w, req, rel)
+	} else if _, ok := e.Cached[vid.ChromeOS]; !ok {
+		s.doTranscode(w, req, vid.ChromeOS, rel)
 		return
 	} else if e.Transcoding {
 		log.Printf("still transcoding %s", rel)
 		http.Error(w, "still transcoding", 404)
 	} else {
-		s.c.mu.RUnlock()
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-		f, err := os.Open(e.Actual)
+		f, err := os.Open(e.Cached[vid.ChromeOS])
 		if err != nil {
 			http.Error(w, "broken", 404)
 			log.Printf("%v", err)
@@ -168,11 +182,10 @@ func (s *server) serveChromeOS(w http.ResponseWriter, req *http.Request) {
 			log.Printf("%v", err)
 			return
 		}
-		http.ServeContent(w, req, filepath.Base(e.Actual), info.ModTime(), f)
-		log.Printf("done serving %s", e.Actual)
+		http.ServeContent(w, req, filepath.Base(e.Cached[vid.ChromeOS]), info.ModTime(), f)
+		log.Printf("done serving %s", e.Cached[vid.ChromeOS])
 		return
 	}
-	s.c.mu.RUnlock()
 }
 
 // serveChromeCast handles when the user intents to stream to a ChromeCast.
@@ -188,23 +201,20 @@ func (s *server) serveChromeCast(w http.ResponseWriter, req *http.Request) {
 	}
 	const prefix = "/chromecast/"
 	rel := req.URL.Path[len(prefix):]
-	s.c.mu.RLock()
-	e := s.c.itemsMap[rel]
+	e := s.c.LookupEntry(rel)
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
-	} else if !e.Cached {
-		s.c.mu.RUnlock()
-		s.doTranscode(w, req, rel)
+	} else if _, ok := e.Cached[vid.ChromeCast]; !ok {
+		s.doTranscode(w, req, vid.ChromeCast, rel)
 		return
 	} else if e.Transcoding {
 		log.Printf("still transcoding %s", rel)
 		http.Error(w, "still transcoding", 404)
 	} else {
-		s.c.mu.RUnlock()
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-		f, err := os.Open(e.Actual)
+		f, err := os.Open(e.Cached[vid.ChromeCast])
 		if err != nil {
 			http.Error(w, "broken", 404)
 			log.Printf("%v", err)
@@ -217,11 +227,10 @@ func (s *server) serveChromeCast(w http.ResponseWriter, req *http.Request) {
 			log.Printf("%v", err)
 			return
 		}
-		http.ServeContent(w, req, filepath.Base(e.Actual), info.ModTime(), f)
-		log.Printf("done serving %s", e.Actual)
+		http.ServeContent(w, req, filepath.Base(e.Cached[vid.ChromeCast]), info.ModTime(), f)
+		log.Printf("done serving %s", e.Cached[vid.ChromeCast])
 		return
 	}
-	s.c.mu.RUnlock()
 }
 
 func (s *server) serveRaw(w http.ResponseWriter, req *http.Request) {
@@ -231,12 +240,10 @@ func (s *server) serveRaw(w http.ResponseWriter, req *http.Request) {
 	}
 	const prefix = "/raw/"
 	rel := req.URL.Path[len(prefix):]
-	s.c.mu.RLock()
-	e := s.c.itemsMap[rel]
-	s.c.mu.RUnlock()
+	e := s.c.LookupEntry(rel)
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(rel)))
 	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-	f, err := os.Open(e.Src)
+	f, err := os.Open(e.SrcFile)
 	if err != nil {
 		http.Error(w, "broken", 404)
 		log.Printf("%v", err)
@@ -264,17 +271,15 @@ func (s *server) serveMetadata(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	rel := req.URL.Path[len("/metadata/"):]
-	s.c.mu.RLock()
-	e := s.c.itemsMap[rel]
-	s.c.mu.RUnlock()
+	e := s.c.LookupEntry(rel)
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
 		return
 	}
-	v, err := e.getInfo()
-	if err != nil {
-		log.Printf("bad file %v", err)
+	v := e.Info()
+	if v == nil {
+		log.Printf("bad file %q", rel)
 		http.Error(w, "Not found", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -286,29 +291,8 @@ func (s *server) serveMetadata(w http.ResponseWriter, req *http.Request) {
 
 // Action
 
-func (s *server) serveTranscode(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "POST" {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	rel := req.FormValue("file")
-	root := req.Referer()
-	if root == "" {
-		http.Error(w, "Need a referred", http.StatusBadRequest)
-		return
-	}
-	s.doTranscode(w, req, rel)
-}
-
-func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, rel string) {
-	s.c.mu.RLock()
-	e := s.c.itemsMap[rel]
-	need := false
-	if e != nil {
-		need = !e.Cached && !e.Transcoding
-	}
-	s.c.mu.RUnlock()
-
+func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, v vid.Device, rel string) {
+	e := s.c.LookupEntry(rel)
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
@@ -317,24 +301,13 @@ func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, rel strin
 
 	// At that point, always redirect to the referer.
 	defer http.Redirect(w, req, req.Referer(), http.StatusFound)
-	if !need {
+	if _, ok := e.Cached[v]; ok || e.Transcoding {
 		return
 	}
-
-	if _, err := e.getInfo(); err != nil {
+	if v := e.Info(); v == nil {
 		// TODO(maruel): Return a failure.
-		log.Printf("%v", err)
+		log.Printf("Failed to process %q", rel)
 		return
 	}
-
-	s.c.mu.Lock()
-	if e.Transcoding == true || e.Cached == true {
-		// Oops.
-		s.c.mu.Unlock()
-		return
-	}
-	e.Transcoding = true
-	s.c.mu.Unlock()
-
-	s.c.queue <- e
+	s.t.Transcode(v, rel, e)
 }
