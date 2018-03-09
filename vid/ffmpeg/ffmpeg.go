@@ -125,7 +125,7 @@ func ProbeRaw(src string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ProbeRaw(%s): %v\n%s", src, err, raw)
 	}
-	if err = json.Unmarshal(raw, out); err != nil {
+	if err = json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("ProbeRaw(%s): %v", src, err)
 	}
 	return out, nil

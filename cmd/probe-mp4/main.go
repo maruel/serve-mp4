@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,12 +16,14 @@ import (
 	"os"
 
 	"github.com/maruel/serve-mp4/vid"
+	"github.com/maruel/serve-mp4/vid/ffmpeg"
 )
 
 const defaultFmt = "Fmt: {{.Container}}\nDur: {{.Duration}}\nVid: {{.VideoCodec}}\nAud: {{.AudioCodec}}\nLng: {{.AudioLang}}"
 
 func mainImpl() error {
 	lang := flag.String("lang", "fre", "preferred language")
+	raw := flag.Bool("raw", false, "print raw JSON")
 	format := flag.String("fmt", defaultFmt, "format to use; an instance vid.Info")
 	verbose := flag.Bool("v", false, "verbose")
 	log.SetFlags(log.Lmicroseconds)
@@ -30,6 +33,19 @@ func mainImpl() error {
 	}
 	if flag.NArg() != 1 {
 		return errors.New("expected a single file")
+	}
+
+	if *raw {
+		v, err := ffmpeg.ProbeRaw(flag.Args()[0])
+		if err != nil {
+			return err
+		}
+		r, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(r)
+		return err
 	}
 
 	v, err := vid.Identify(flag.Args()[0], *lang)
