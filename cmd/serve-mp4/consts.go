@@ -33,8 +33,8 @@ const (
 	background-color: #DDD;
 }
 </style>
-{{if .Rel}} - <a href="..">Répertoire parent</a><br>{{end}}
-{{- range $name, $e := .Directory.Subdirs}} - <a href="{{$name}}/">{{$name}}/</a><br>
+{{if .Rel}} - <a href="..">Parent</a><br>{{end}}
+{{- range $name, $e := .Directory.Subdirs}} - <a href="{{$name}}/">{{$name}}/</a> ({{$e.TotalItems}} files)<br>
 {{- end -}}
 {{- range $name, $e := .Directory.Items}} - {{$name}} – {{if $e.Transcoding -}}
 		{{$e.Percent}} <img src="/spinner.gif" style="height:1em" />

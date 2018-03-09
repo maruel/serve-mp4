@@ -93,6 +93,14 @@ func (d *Directory) StillLoading() bool {
 	return false
 }
 
+func (d *Directory) TotalItems() int {
+	t := len(d.Items)
+	for _, s := range d.Subdirs {
+		t += s.TotalItems()
+	}
+	return t
+}
+
 func (d *Directory) lookupDir(dir string) *Directory {
 	if dir == "" {
 		return d
