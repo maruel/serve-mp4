@@ -23,44 +23,50 @@ const (
   padding: 0;
   text-decoration: underline;
 }
-.form-btn {
+form {
+	background-color: #DDD;
 	display: inline;
+}
+form input {
+	border: 0;
+	display: inline;
+	height: 1em;
+}
+img {
+	height: 1em;
 }
 .downloads {
 	display: inline;
-}
-.missing {
-	background-color: #DDD;
 }
 </style>
 {{if .Rel}} - <a href="..">Parent</a><br>{{end}}
 {{- range $name, $e := .Directory.Subdirs}} - <a href="{{$name}}/">{{$name}}/</a> ({{$e.TotalItems}} files)<br>
 {{- end -}}
-{{- range $name, $e := .Directory.Items}} - {{$name}} – {{if $e.Transcoding -}}
-		{{$e.Percent}} <img src="/spinner.gif" style="height:1em" />
+{{- range $name, $e := .Directory.Items}} - {{$name}} – {{if $e.IsTranscoding -}}
+		{{$e.Percent}} <img src="/spinner.gif" />
 	{{- end -}}
 	<div class="downloads">
-		{{$cc := index $e.Cached $.ChromeCast}}
-		{{$co := index $e.Cached $.ChromeOS}}
-		<a href="/chromecast/{{$.Rel}}/{{$name}}" class="{{if not $cc}}missing{{end}}"><img src="/cast.svg" style="height:1em" /></a>
-		<a href="/chromeos/{{$.Rel}}/{{$name}}" class="{{if not $co}}missing{{end}}"><img src="/chromeos.svg" style="height:1em" /></a>
-		<a href="/raw/{{$.Rel}}/{{$name}}"><img src="/vlc.svg" style="height:1em" /></a>
+		{{- if $e.IsCachedChromeCast -}}
+			<a href="/chromecast/{{$e.ChromeCastPath}}"><img src="/cast.svg" /></a>
+		{{- else -}}
+			<form action="/transcode/chromecast/{{$e.Rel}}" method="POST">
+				<input type="image" name="submit" alt="Submit" src="/cast.svg" />
+			</form>
+		{{- end -}}
+		&nbsp;
+		{{- if $e.IsCachedChromeOS -}}
+			<a href="/chromeos/{{$e.ChromeOSPath}}"><img src="/chromeos.svg" /></a>
+		{{- else -}}
+			<form action="/transcode/chromeos/{{$e.Rel}}" method="POST">
+				<input type="image" name="submit" alt="Submit" src="/chromeos.svg" />
+			</form>
+		{{end}}
+		&nbsp;
+		<a href="/raw/{{$e.Rel}}"><img src="/vlc.svg" style="height:1em" /></a>
 	</div>
-	 – <a href="/metadata/{{$.Rel}}/{{$name}}">{{if $e.TryInfo -}}{{.TryInfo.Duration}}{{else}}Meta{{end}}</a><br>
+	 – <a href="/metadata/{{$e.Rel}}">{{if $e.TryInfo -}}{{$e.TryInfo.Duration}}{{else}}Meta{{end}}</a><br>
 {{- end}}
 `
-	/*
-		 {{range .Buckets}}<a href="#{{.Dir}}" id={{.Dir}}>{{.Dir}}</a><br>
-			{{- range .Items}} - {{if .Cached -}}
-					<a href="chromecast/{{.Rel}}">{{.Base}}</a>
-				{{- else if .Transcoding -}}
-					{{.Base}} – {{.Percent}} <img src=spinner.gif style="height:1em" />
-				{{- else -}}
-				{{.Base}} – <form action="transcode" method=POST class="form-btn"><button type="submit" name="file" value="{{.Rel}}"><img src=favicon.ico style="height:1em" /></button></form>
-				{{- end}} – <a href="metadata/{{.Rel}}">{{if .Info -}}{{.Info.Duration}}{{else}}Meta{{end}}</a><br>
-		 {{end}}<br>
-		 {{- end}}
-	*/
 
 	//
 	// python -c "import base64;a=base64.b64encode(open('a','rb').read()); print '\n'.join(a[i:i+70] for i in range(0,len(a),70))"

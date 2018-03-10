@@ -23,17 +23,56 @@ import (
 
 // Entry is a single video file found.
 type Entry struct {
-	SrcFile       string // Absolute path to source file.
+	Rel           string // Relative path to source file.
 	preferredLang string // cache of prefered language.
+	rootDir       string // cache of root directory.
 
 	// Mutable
 	mu          sync.Mutex
 	info        *vid.Info
-	err         error                 // Cached error if Info() failed.
-	Cached      map[vid.Device]string // Transcoded paths.
-	Transcoding bool                  // Transcoding
-	Frame       int                   // Frame at which transcoding is at
-	cold        bool                  // cold means that the file disappeared in last refresh
+	err         error               // Cached error if Info() failed.
+	cached      map[vid.Device]bool // Transcoded paths.
+	transcoding bool                // transcoding
+	frame       int                 // frame at which transcoding is at
+	cold        bool                // cold means that the file disappeared in last refresh
+}
+
+func (e *Entry) IsCached(v vid.Device) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cached[v]
+}
+
+func (e *Entry) IsCachedChromeCast() bool {
+	return e.IsCached(vid.ChromeCast)
+}
+
+func (e *Entry) IsCachedChromeOS() bool {
+	return e.IsCached(vid.ChromeOS)
+}
+
+func (e *Entry) Path(v vid.Device) string {
+	return e.Rel[:len(e.Rel)-len(filepath.Ext(e.Rel))+1] + v.ToContainer()
+}
+
+// ChromeCastPath is the path for the ChromeCast version.
+//
+// It must be prepended by cacheDir and v.String().
+func (e *Entry) ChromeCastPath() string {
+	return e.Path(vid.ChromeCast)
+}
+
+// ChromeOSPath is the path for the ChromeOS version.
+//
+// It must be prepended by cacheDir and v.String().
+func (e *Entry) ChromeOSPath() string {
+	return e.Path(vid.ChromeOS)
+}
+
+func (e *Entry) IsTranscoding() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.transcoding
 }
 
 // Percent returns the percentage at which transcoding is at.
@@ -43,7 +82,7 @@ func (e *Entry) Percent() string {
 		return "N/A"
 	}
 	e.mu.Lock()
-	f := e.Frame
+	f := e.frame
 	e.mu.Unlock()
 	nb, err := strconv.Atoi(v.Raw.Streams[v.VideoIndex].NbFrames)
 	if err != nil {
@@ -61,14 +100,19 @@ func (e *Entry) TryInfo() *vid.Info {
 
 // Info lazy loads e.info.
 func (e *Entry) Info() *vid.Info {
+	s := e.srcFile()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.info == nil && e.err == nil {
-		if e.info, e.err = vid.Identify(e.SrcFile, e.preferredLang); e.err != nil {
-			log.Printf("%q:%v", e.SrcFile, e.err)
+		if e.info, e.err = vid.Identify(s, e.preferredLang); e.err != nil {
+			log.Printf("%q:%v", s, e.err)
 		}
 	}
 	return e.info
+}
+
+func (e *Entry) srcFile() string {
+	return filepath.Join(e.rootDir, e.Rel)
 }
 
 //
@@ -80,8 +124,8 @@ type Directory struct {
 }
 
 func (d *Directory) StillLoading() bool {
-	for _, v := range d.Items {
-		if v.Transcoding {
+	for _, e := range d.Items {
+		if e.IsTranscoding() {
 			return true
 		}
 	}
@@ -176,6 +220,7 @@ func (d *Directory) trimCold() {
 //
 
 type Catalog interface {
+	CacheDir() string
 	LookupEntry(rel string) *Entry
 	LookupDir(rel string) *Directory
 }
@@ -208,6 +253,10 @@ func NewCatalog(rootDir, cacheDir, preferredLang string) (Catalog, error) {
 		}
 	}
 	return c, nil
+}
+
+func (c *catalog) CacheDir() string {
+	return c.cacheDir
 }
 
 func (c *catalog) LookupEntry(rel string) *Entry {
@@ -275,15 +324,16 @@ func (c *catalog) addFile(rel string) {
 	}
 
 	e := &Entry{
-		SrcFile:       filepath.Join(c.rootDir, rel),
-		Cached:        map[vid.Device]string{},
+		Rel:           rel,
 		preferredLang: c.preferredLang,
+		rootDir:       c.rootDir,
+		cached:        map[vid.Device]bool{},
 	}
 	for _, v := range []vid.Device{vid.ChromeCast, vid.ChromeOS} {
 		// For now force transcoding so -movflags +faststart is guaranteed.
-		p := c.toCachedPath(rel, v)
-		if i, err := os.Stat(p); err == nil && i.Size() > 0 {
-			e.Cached[v] = p
+		p := toCachedPath(rel, v)
+		if i, err := os.Stat(filepath.Join(c.cacheDir, p)); err == nil && i.Size() > 0 {
+			e.cached[v] = true
 		}
 	}
 	d.Items[base] = e
@@ -332,11 +382,10 @@ func (c *catalog) enumerateEntries() []string {
 	return dirs
 }
 
-func (c *catalog) toCachedPath(rel string, v vid.Device) string {
-	path := filepath.Join(c.cacheDir, v.String(), rel)
+func toCachedPath(rel string, v vid.Device) string {
+	path := filepath.Join(v.String(), rel)
 	ext := filepath.Ext(path)
-	// TODO(maruel): ChromeOS supports many extensions.
-	return path[:len(path)-len(ext)] + ".mp4"
+	return path[:len(path)-len(ext)] + "." + v.ToContainer()
 }
 
 //
@@ -533,13 +582,12 @@ func (c *crawler) handleRefresh(refresh <-chan bool) {
 
 type TranscodingQueue interface {
 	io.Closer
-	Transcode(v vid.Device, rel string, e *Entry)
+	Transcode(v vid.Device, e *Entry)
 }
 
 type transcodingRequest struct {
-	rel string
-	v   vid.Device
-	e   *Entry
+	v vid.Device
+	e *Entry
 }
 
 type transcodingQueue struct {
@@ -575,9 +623,11 @@ func (t *transcodingQueue) Close() error {
 	return nil
 }
 
-func (t *transcodingQueue) Transcode(v vid.Device, rel string, e *Entry) {
-	e.Transcoding = true
-	t.queue <- &transcodingRequest{v: v, rel: rel, e: e}
+func (t *transcodingQueue) Transcode(v vid.Device, e *Entry) {
+	e.mu.Lock()
+	e.transcoding = true
+	e.mu.Unlock()
+	t.queue <- &transcodingRequest{v: v, e: e}
 }
 
 func (t *transcodingQueue) run() {
@@ -587,21 +637,26 @@ func (t *transcodingQueue) run() {
 		}
 		p := func(frame int) {
 			r.e.mu.Lock()
-			r.e.Frame = frame
+			r.e.frame = frame
 			r.e.mu.Unlock()
 		}
 
-		// Keeps the lock for the whole process so the serve-mp4 executable doesn't
-		// abruptly interrupt the transcoding but do not keep the Entry lock.
+		// Keeps the transcoding lock for the whole process so the serve-mp4
+		// executable doesn't abruptly interrupt the transcoding but do not keep
+		// the Entry lock.
+		i := r.e.Info()
+		if i == nil {
+			log.Printf("Skipping transcoding for %q", r.e.Rel)
+		}
+		path := filepath.Join(t.c.cacheDir, toCachedPath(r.e.Rel, r.v))
 		t.mu.Lock()
-		path := t.c.toCachedPath(r.rel, r.v)
-		err := r.v.TranscodeMP4(r.e.SrcFile, path, r.e.Info(), p)
+		err := r.v.TranscodeMP4(r.e.srcFile(), path, i, p)
 		t.mu.Unlock()
 
 		r.e.mu.Lock()
-		r.e.Transcoding = false
+		r.e.transcoding = false
 		if err == nil {
-			r.e.Cached[r.v] = path
+			r.e.cached[r.v] = true
 		}
 		r.e.mu.Unlock()
 	}

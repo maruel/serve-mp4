@@ -159,16 +159,23 @@ func (d Device) supportedVideo(codec string) bool {
 // supportedAudio returns true if this device supports this audio codec.
 func (d Device) supportedAudio(codec string) bool {
 	switch codec {
-	case "ac3", "dts":
-		// ChromeOS doesn't support these.
+	case "ac3":
+		// ChromeOS doesn't support this, Cast does passthrough, which is fine
+		// since all TVs can decode it.
 		return d != ChromeOS
 	// TODO(maruel): Confirm they all work.
 	case "aac", "mp2", "mp3":
 		return true
 	default:
 		// pcm_u8, wmav2
+		// Seems like ChromeCast doesn't support "dts"
 		return false
 	}
+}
+
+func (d Device) ToContainer() string {
+	// TODO(maruel): Implement in the case of ChromeOS.
+	return "mp4"
 }
 
 // Transcode transcodes a video file for playback on the device as MP4.

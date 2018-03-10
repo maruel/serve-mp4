@@ -69,6 +69,9 @@ func startServer(bind string, c Catalog, t TranscodingQueue) (io.Closer, error) 
 	m.HandleFunc("/metadata/", s.serveMetadata)
 	m.HandleFunc("/browse/", s.serveBrowse)
 	m.HandleFunc("/", serveRoot)
+	// Action
+	m.HandleFunc("/transcode/chromecast/", s.transcodeChromeCast)
+	m.HandleFunc("/transcode/chromeos/", s.transcodeChromeOS)
 
 	s.h.Handler = &loghttp.Handler{Handler: m}
 	go s.h.Serve(ln)
@@ -134,15 +137,11 @@ func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
 		ShouldRefresh bool
 		Directory     *Directory
 		Rel           string
-		ChromeCast    vid.Device
-		ChromeOS      vid.Device
 	}{
 		Title:         "serve-mp4",
 		ShouldRefresh: d.StillLoading(),
 		Directory:     d,
 		Rel:           rel,
-		ChromeCast:    vid.ChromeCast,
-		ChromeOS:      vid.ChromeOS,
 	}
 	if err := listing.Execute(w, data); err != nil {
 		log.Printf("root template: %v", err)
@@ -150,42 +149,7 @@ func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) serveChromeOS(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
-	const prefix = "/chromeos/"
-	rel := req.URL.Path[len(prefix):]
-	e := s.c.LookupEntry(rel)
-	if e == nil {
-		log.Printf("no item %s", rel)
-		http.Error(w, "Not found", 404)
-	} else if _, ok := e.Cached[vid.ChromeOS]; !ok {
-		s.doTranscode(w, req, vid.ChromeOS, rel)
-		return
-	} else if e.Transcoding {
-		log.Printf("still transcoding %s", rel)
-		http.Error(w, "still transcoding", 404)
-	} else {
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-		f, err := os.Open(e.Cached[vid.ChromeOS])
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		http.ServeContent(w, req, filepath.Base(e.Cached[vid.ChromeOS]), info.ModTime(), f)
-		log.Printf("done serving %s", e.Cached[vid.ChromeOS])
-		return
-	}
+	s.serveTranscoded(w, req, "/chromeos/", vid.ChromeOS)
 }
 
 // serveChromeCast handles when the user intents to stream to a ChromeCast.
@@ -195,42 +159,21 @@ func (s *server) serveChromeOS(w http.ResponseWriter, req *http.Request) {
 //
 // It's 5$ to get the ID: https://cast.google.com/publish/#/signup
 func (s *server) serveChromeCast(w http.ResponseWriter, req *http.Request) {
+	s.serveTranscoded(w, req, "/chromecast/", vid.ChromeCast)
+}
+
+func (s *server) serveTranscoded(w http.ResponseWriter, req *http.Request, prefix string, v vid.Device) {
 	if req.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	const prefix = "/chromecast/"
 	rel := req.URL.Path[len(prefix):]
-	e := s.c.LookupEntry(rel)
-	if e == nil {
-		log.Printf("no item %s", rel)
-		http.Error(w, "Not found", 404)
-	} else if _, ok := e.Cached[vid.ChromeCast]; !ok {
-		s.doTranscode(w, req, vid.ChromeCast, rel)
-		return
-	} else if e.Transcoding {
-		log.Printf("still transcoding %s", rel)
-		http.Error(w, "still transcoding", 404)
-	} else {
-		w.Header().Set("Content-Type", "video/mp4")
-		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-		f, err := os.Open(e.Cached[vid.ChromeCast])
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			http.Error(w, "broken", 404)
-			log.Printf("%v", err)
-			return
-		}
-		http.ServeContent(w, req, filepath.Base(e.Cached[vid.ChromeCast]), info.ModTime(), f)
-		log.Printf("done serving %s", e.Cached[vid.ChromeCast])
-		return
+	// The challenge here is that we can't find the item based on the path.
+	if filepath.Clean(rel) != rel {
+		log.Printf("Invalid path %q", rel)
+		http.Error(w, "Invalid path", 400)
 	}
+	serveFile(w, req, filepath.Join(s.c.CacheDir(), v.String(), rel))
 }
 
 func (s *server) serveRaw(w http.ResponseWriter, req *http.Request) {
@@ -241,23 +184,12 @@ func (s *server) serveRaw(w http.ResponseWriter, req *http.Request) {
 	const prefix = "/raw/"
 	rel := req.URL.Path[len(prefix):]
 	e := s.c.LookupEntry(rel)
-	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(rel)))
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
-	f, err := os.Open(e.SrcFile)
-	if err != nil {
-		http.Error(w, "broken", 404)
-		log.Printf("%v", err)
+	if e == nil {
+		log.Printf("no item %s", rel)
+		http.Error(w, "Not found", 404)
 		return
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		http.Error(w, "broken", 404)
-		log.Printf("%v", err)
-		return
-	}
-	http.ServeContent(w, req, filepath.Base(rel), info.ModTime(), f)
-	log.Printf("done serving %s", rel)
+	serveFile(w, req, e.srcFile())
 }
 
 func (s *server) serveMetadata(w http.ResponseWriter, req *http.Request) {
@@ -291,23 +223,63 @@ func (s *server) serveMetadata(w http.ResponseWriter, req *http.Request) {
 
 // Action
 
-func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, v vid.Device, rel string) {
+func (s *server) transcodeChromeCast(w http.ResponseWriter, req *http.Request) {
+	s.doTranscode(w, req, "/transcode/chromecast/", vid.ChromeCast)
+}
+
+func (s *server) transcodeChromeOS(w http.ResponseWriter, req *http.Request) {
+	s.doTranscode(w, req, "/transcode/chromeos/", vid.ChromeOS)
+}
+
+func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, prefix string, v vid.Device) {
+	if req.Method != "POST" {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	rel := req.URL.Path[len(prefix):]
 	e := s.c.LookupEntry(rel)
 	if e == nil {
 		log.Printf("no item %s", rel)
 		http.Error(w, "Not found", 404)
 		return
 	}
-
-	// At that point, always redirect to the referer.
-	defer http.Redirect(w, req, req.Referer(), http.StatusFound)
-	if _, ok := e.Cached[v]; ok || e.Transcoding {
+	if e.IsCached(v) {
+		log.Printf("no item %s", rel)
+		http.Error(w, "Already transcoded", 400)
+		return
+	}
+	if e.IsTranscoding() {
+		log.Printf("still transcoding %s", rel)
+		http.Error(w, "Already transcoding", 400)
 		return
 	}
 	if v := e.Info(); v == nil {
-		// TODO(maruel): Return a failure.
 		log.Printf("Failed to process %q", rel)
+		http.Error(w, "Failed to process", 400)
 		return
 	}
-	s.t.Transcode(v, rel, e)
+
+	// At that point, always redirect to the referer.
+	defer http.Redirect(w, req, req.Referer(), http.StatusFound)
+	s.t.Transcode(v, e)
+}
+
+func serveFile(w http.ResponseWriter, req *http.Request, path string) {
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
+	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(path)))
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "broken", 404)
+		log.Printf("%q: %v", path, err)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "broken", 404)
+		log.Printf("%q: %v", path, err)
+		return
+	}
+	http.ServeContent(w, req, filepath.Base(path), info.ModTime(), f)
+	log.Printf("done serving %s", path)
 }
