@@ -205,11 +205,16 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 		// https://trac.ffmpeg.org/wiki/Encode/H.265; only works with ChromeCast Ultra.
 		// https://trac.ffmpeg.org/wiki/HWAccelIntro; on nvidia, use h264_nvenc and h264_cuvid
 		// On Raspbian, use: h264_omx
-		speed := "fast"
-		if d == ChromeOS {
-			speed = "slow"
+		args = append(args, "-c:v", "h264")
+		switch d {
+		case ChromeCast, ChromeCastUltra:
+			// Transcode very fast. This creates large files but we don't care much
+			// here.
+			args = append(args, "-preset", "faster", "-crf", "21")
+		case ChromeOS:
+			// The file is meant to be stored on a device. Keep it small.
+			args = append(args, "-preset", "slow", "-crf", "21")
 		}
-		args = append(args, "-c:v", "h264", "-preset", speed, "-crf", "21")
 	}
 
 	if d.supportedAudio(v.AudioCodec) {
