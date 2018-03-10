@@ -6,7 +6,7 @@ via [Caddy](https://caddyserver.com).
 ![ChromeCast](https://raw.githubusercontent.com/wiki/maruel/serve-mp4/chromecast.png)
 
 Requires [ffmpeg/ffprobe](https://ffmpeg.org/) to be installed. To install, run
-[./cmd/build-ffmpeg.sh](cmd/build-ffmpeg.sh).
+[./support/build-ffmpeg.sh](support/build-ffmpeg.sh).
 
 By default, it will prefer French audio tracks over others.
 
@@ -55,9 +55,8 @@ example.com {
   root /var/www/html
 
   # Proxy to serve-mp4.
-  proxy /Videos/ localhost:7999 {
+  proxy / localhost:7999 {
     transparent
-    without /Videos
   }
 }
 ```
