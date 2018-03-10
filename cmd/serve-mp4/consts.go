@@ -9,8 +9,12 @@ const (
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
-<link rel="shortcut icon" type="image/png" href="favicon.ico"/>
-{{if .ShouldRefresh}}<meta http-equiv="refresh" content="5">{{end}}
+{{- if .ShouldRefresh -}}
+	<link rel="shortcut icon" type="image/gif" href="/spinner.gif"/>
+	<meta http-equiv="refresh" content="5">
+{{- else -}}
+	<link rel="shortcut icon" type="image/png" href="/favicon.ico"/>
+{{- end -}}
 <style>
 .btn-link {
   background: none;
