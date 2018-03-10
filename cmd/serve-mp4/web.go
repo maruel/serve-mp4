@@ -21,47 +21,45 @@ import (
 	"github.com/maruel/serve-mp4/vid"
 )
 
-var (
-	listing      = template.Must(template.New("listing").Parse(listingRaw))
-	favicon      []byte
-	spinner      []byte
-	casticon     []byte
-	chromeOSicon []byte
-	vlcicon      []byte
-)
-
-func init() {
-	var err error
-	if favicon, err = base64.StdEncoding.DecodeString(faviconRaw); err != nil {
-		panic(err)
-	}
-	if spinner, err = base64.StdEncoding.DecodeString(spinnerRaw); err != nil {
-		panic(err)
-	}
-	casticon = []byte(castIcon)
-	chromeOSicon = []byte(chromeOSIcon)
-	vlcicon = []byte(vlcIcon)
-}
-
 // startServer starts the web server.
-func startServer(bind string, c Catalog, t TranscodingQueue) (io.Closer, error) {
+func startServer(bind string, c Catalog, t TranscodingQueue) (Server, error) {
+	// Static content.
+	favicon, err := base64.StdEncoding.DecodeString(faviconBase64)
+	if err != nil {
+		return nil, err
+	}
+	spinner, err := base64.StdEncoding.DecodeString(spinnerBase64)
+	if err != nil {
+		return nil, err
+	}
+	casticon := []byte(castIcon)
+	chromeOSicon := []byte(chromeOSIcon)
+	vlcicon := []byte(vlcIcon)
+
+	listing, err := template.New("listing").Parse(listingRaw)
+	if err != nil {
+		return nil, err
+	}
+
 	ln, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, err
 	}
 	s := &server{
-		c: c,
-		t: t,
-		h: http.Server{Addr: ln.Addr().String()},
+		c:       c,
+		t:       t,
+		h:       http.Server{Addr: ln.Addr().String()},
+		listing: listing,
 	}
 
+	// Routing.
 	m := &http.ServeMux{}
 	// Static
-	m.HandleFunc("/cast.svg", serveStatic(casticon, "image/svg+xml"))
-	m.HandleFunc("/chromeos.svg", serveStatic(chromeOSicon, "image/svg+xml"))
-	m.HandleFunc("/favicon.ico", serveStatic(favicon, "image/x-icon"))
-	m.HandleFunc("/spinner.gif", serveStatic(spinner, "image/gif"))
-	m.HandleFunc("/vlc.svg", serveStatic(vlcicon, "image/svg+xml"))
+	m.HandleFunc("/cast.svg", serveStatic(casticon))
+	m.HandleFunc("/chromeos.svg", serveStatic(chromeOSicon))
+	m.HandleFunc("/favicon.ico", serveStatic(favicon))
+	m.HandleFunc("/spinner.gif", serveStatic(spinner))
+	m.HandleFunc("/vlc.svg", serveStatic(vlcicon))
 	// Retrieval
 	m.HandleFunc("/chromecast/", s.serveChromeCast)
 	m.HandleFunc("/chromeos/", s.serveChromeOS)
@@ -75,14 +73,23 @@ func startServer(bind string, c Catalog, t TranscodingQueue) (io.Closer, error) 
 
 	s.h.Handler = &loghttp.Handler{Handler: m}
 	go s.h.Serve(ln)
-	log.Printf("Listening on %s", s.h.Addr)
 	return s, nil
 }
 
+type Server interface {
+	io.Closer
+	Addr() string
+}
+
 type server struct {
-	c Catalog
-	t TranscodingQueue
-	h http.Server
+	c       Catalog
+	t       TranscodingQueue
+	h       http.Server
+	listing *template.Template
+}
+
+func (s *server) Addr() string {
+	return s.h.Addr
 }
 
 func (s *server) Close() error {
@@ -91,13 +98,13 @@ func (s *server) Close() error {
 
 // Static
 
-func serveStatic(b []byte, t string) http.HandlerFunc {
+func serveStatic(b []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != "GET" {
 			http.Error(w, "GET only", http.StatusMethodNotAllowed)
 			return
 		}
-		w.Header().Set("Content-Type", t)
+		w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(req.URL.Path)))
 		w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 		w.Write(b)
 	}
@@ -130,6 +137,11 @@ func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Not found", 404)
 		return
 	}
+	// Always make sure there's a trailling /, which simplifies things.
+	if rel != "" && !strings.HasSuffix(rel, "/") {
+		http.Redirect(w, req, req.URL.Path+"/", http.StatusFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private")
 	data := struct {
@@ -143,7 +155,7 @@ func (s *server) serveBrowse(w http.ResponseWriter, req *http.Request) {
 		Directory:     d,
 		Rel:           rel,
 	}
-	if err := listing.Execute(w, data); err != nil {
+	if err := s.listing.Execute(w, data); err != nil {
 		log.Printf("root template: %v", err)
 	}
 }
@@ -236,6 +248,11 @@ func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, prefix st
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	if req.Referer() == "" {
+		http.Error(w, "Bad referer", http.StatusMethodNotAllowed)
+		return
+	}
+	// TODO(maruel): Assert the referrer is from the same host.
 	rel := req.URL.Path[len(prefix):]
 	e := s.c.LookupEntry(rel)
 	if e == nil {
@@ -265,8 +282,8 @@ func (s *server) doTranscode(w http.ResponseWriter, req *http.Request, prefix st
 }
 
 func serveFile(w http.ResponseWriter, req *http.Request, path string) {
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(path)))
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 24*60*60
 	f, err := os.Open(path)
 	if err != nil {
 		http.Error(w, "broken", 404)

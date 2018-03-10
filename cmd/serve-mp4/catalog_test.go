@@ -5,8 +5,6 @@
 package main
 
 import (
-	"io/ioutil"
-	"os"
 	"reflect"
 	"testing"
 )
@@ -68,15 +66,8 @@ func TestCatalog(t *testing.T) {
 }
 
 func TestCatalog_addFile(t *testing.T) {
-	d, err := ioutil.TempDir("", "serve-mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := os.Remove(d); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	d, f := tmpDir(t)
+	defer f()
 	cat, err := NewCatalog(d, d, "")
 	if err != nil {
 		t.Fatal(err)

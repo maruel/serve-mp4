@@ -205,7 +205,11 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 		// https://trac.ffmpeg.org/wiki/Encode/H.265; only works with ChromeCast Ultra.
 		// https://trac.ffmpeg.org/wiki/HWAccelIntro; on nvidia, use h264_nvenc and h264_cuvid
 		// On Raspbian, use: h264_omx
-		args = append(args, "-c:v", "h264", "-preset", "slow", "-crf", "21")
+		speed := "fast"
+		if d == ChromeOS {
+			speed = "slow"
+		}
+		args = append(args, "-c:v", "h264", "-preset", speed, "-crf", "21")
 	}
 
 	if d.supportedAudio(v.AudioCodec) {

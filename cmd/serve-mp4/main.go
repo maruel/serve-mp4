@@ -68,6 +68,7 @@ func mainImpl() error {
 		return err
 	}
 	defer s.Close()
+	log.Printf("Listening on %s", s.Addr())
 
 	return crawl.WatchFiles()
 }

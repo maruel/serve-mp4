@@ -72,7 +72,7 @@ img {
 	// python -c "import base64;a=base64.b64encode(open('a','rb').read()); print '\n'.join(a[i:i+70] for i in range(0,len(a),70))"
 	//
 
-	faviconRaw = `
+	faviconBase64 = `
 iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAABmJLR0QA/wD/AP+gvaeTAA
 AACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH4QsbFR43lxV4QwAADwFJREFUeNrtXQl0
 VcUZnrzsIYAkIWwxhC2QkJAQ1NatYCnKaesRFbGVumArnrq3Vo9La3FHjxS1FndP1R4PKk
@@ -150,7 +150,7 @@ l9ExS/dkaxrzE8dDAU+S9F4/a6CdIXkJmlew00UwvItnrWP0UtvboxH36d/BgBNI+oq3sC
 eg5Jb1+3kvQhj1LXc7GcfKvy7CBFAQkeZy9wkLA93IoVK1asWLFixYoVK1asWLGS7fJ/OO
 9bxmC9QZgAAAAASUVORK5CYII=`
 
-	spinnerRaw = `
+	spinnerBase64 = `
 R0lGODlhgACAAMIGAAIAAgMAAwQABAACAAADAAAEAP///////yH/C05FVFNDQVBFMi4wAw
 EAAAAh+QQJBwAHACwAAAAAgACAAAAD/ni63P4wykmrvTjrzbv/YCiOZGmeaKqurCoMQAwM
 QmvfTCDvMoH/Kp5QBiyShkiAcemBJYUDphRDeCJ906zEmtR6HTruEPv9OsW8aPmLRq5BhX
