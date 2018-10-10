@@ -50,6 +50,7 @@ function install_nasm {
   ./autogen.sh
   ./configure
   make -j all manpages
+  # TODO(maruel): Install locally.
   sudo make install
   hash -r
   cd ..
@@ -70,6 +71,7 @@ function install_x264 {
   git checkout 7d0ff22e8c96de126be9d3de4952edd6d1b75a8c
   ./configure --enable-static --enable-shared
   make -j
+  # TODO(maruel): Install locally.
   sudo make install
   sudo ldconfig
   cd ..
@@ -85,7 +87,7 @@ function install_ffmpeg {
   fi
   checkout_or_fetch https://github.com/ffmpeg/FFMpeg FFMpeg
   # Use the latest release as FFMpeg uses proper git tag.
-  # 'n3.4.2' as of this writting.
+  # 'n4.0.2' as of this writting.
   git checkout $(git tag | grep -v dev | grep '^n' | sort -h | tail -n 1)
 
   # TODO(maruel): On Raspbian, we want to use the OMX encoder for performance
@@ -99,7 +101,6 @@ function install_ffmpeg {
       --enable-nonfree \
       --pkg-config-flags="--static" \
       --disable-ffplay \
-      --disable-ffserver \
       --disable-doc \
       --enable-libx264
   # --disable-network
@@ -117,13 +118,14 @@ function install_ffmpeg {
   # --list-outdevs           show all available output devices
   # --list-filters           show all available filters
   make -j
+  # TODO(maruel): Install locally.
   sudo make install
   hash -r
   cd ..
   echo "- Installed FFMpeg"
 }
 
-#prerequisites
+prerequisites
 #clean
 install_nasm
 install_x264
