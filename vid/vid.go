@@ -72,6 +72,9 @@ func Identify(src string, lang string) (*Info, error) {
 	if len(videos) > 1 {
 		return nil, fmt.Errorf("Identify(%s): too many video streams", src)
 	}
+	if len(videos) == 0 {
+		return nil, fmt.Errorf("Identify(%s): no video stream found", src)
+	}
 	out.VideoIndex = out.Raw.Streams[videos[0]].Index
 	out.VideoCodec = out.Raw.Streams[videos[0]].CodecName
 	for _, i := range audios {
