@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/kr/pretty"
+	"github.com/maruel/panicparse/stack/webstack"
 	"github.com/maruel/serve-dir/loghttp"
 	"github.com/maruel/serve-mp4/vid"
 )
@@ -70,6 +71,7 @@ func startServer(bind string, c Catalog, t TranscodingQueue) (Server, error) {
 	// Action
 	m.HandleFunc("/transcode/chromecast/", s.transcodeChromeCast)
 	m.HandleFunc("/transcode/chromeos/", s.transcodeChromeOS)
+	m.HandleFunc("/debug", webstack.SnapshotHandler)
 
 	s.h.Handler = &loghttp.Handler{Handler: m}
 	go s.h.Serve(ln)
