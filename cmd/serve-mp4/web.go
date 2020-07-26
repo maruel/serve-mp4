@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,12 @@ func startServer(bind string, c Catalog, t TranscodingQueue) (Server, error) {
 	m.HandleFunc("/transcode/chromecast/", s.transcodeChromeCast)
 	m.HandleFunc("/transcode/chromeos/", s.transcodeChromeOS)
 	m.HandleFunc("/debug", webstack.SnapshotHandler)
+	// Profiling
+	m.HandleFunc("/debug/pprof/", pprof.Index)
+	m.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	m.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	m.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	m.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	s.h.Handler = &loghttp.Handler{Handler: m}
 	go s.h.Serve(ln)

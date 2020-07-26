@@ -179,7 +179,7 @@ func (d *Directory) lookupEntry(rel string) *Entry {
 // findEntryToPreload is inefficient but for few thousands it should be fine.
 func (d *Directory) findEntryToPreload() *Entry {
 	for _, e := range d.Items {
-		if e.info == nil {
+		if e.info == nil && e.err == nil {
 			return e
 		}
 	}
