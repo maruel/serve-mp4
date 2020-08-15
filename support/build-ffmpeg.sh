@@ -11,7 +11,12 @@ set -eu
 
 cd "$(dirname $0)"
 
-
+# On non-Raspbian:
+# - sudo usermod -a -G video $USER
+# - sudo apt install v4l-utils
+# - sudo apt-get install yasm
+# On Raspbian:
+# - sudo raspi-config nonint do_camera 0
 function prerequisites {
   sudo apt install \
       autoconf \
@@ -28,6 +33,7 @@ function clean {
   rm -rf FFMpeg nasm x264
 }
 
+# The function fetches or clone the repository, then cd's into it.
 function checkout_or_fetch {
   if [ -d $2 ]; then
     cd $2
@@ -87,25 +93,10 @@ function install_ffmpeg {
   fi
   checkout_or_fetch https://github.com/ffmpeg/FFMpeg FFMpeg
   # Use the latest release as FFMpeg uses proper git tag.
-  # 'n4.0.2' as of this writting.
+  # 'n4.0.2' as of this writing.
   git checkout $(git tag | grep -v dev | grep '^n' | sort -h | tail -n 1)
 
-  # TODO(maruel): On Raspbian, we want to use the OMX encoder for performance
-  # and strip the compile as much as possible because it is very slow.
-  #--disable-everything \
-  #--enable-omx --enable-omx-rpi \
-  #--enable-indev=v4l2 --enable-protocol=pipe \
-  #--enable-muxer=mp4 --enable-muxer=mpegts --enable-demuxer=mpegts
-
-  ./configure --enable-gpl \
-      --enable-nonfree \
-      --pkg-config-flags="--static" \
-      --disable-ffplay \
-      --disable-doc \
-      --enable-libx264
-  # --disable-network
-  # --disable-all
-
+  # List of ./configure flags:
   # --list-decoders          show all available decoders
   # --list-encoders          show all available encoders
   # --list-hwaccels          show all available hardware accelerators
@@ -117,6 +108,33 @@ function install_ffmpeg {
   # --list-indevs            show all available input devices
   # --list-outdevs           show all available output devices
   # --list-filters           show all available filters
+
+  # TODO(maruel): Detect Raspbian.
+  if false; then
+    # On Raspbian, we want to use the OMX encoder for performance and strip the
+    # compile as much as possible because it is very slow.
+    ./configure --enable-gpl \
+      --enable-nonfree \
+      --disable-everything \
+      --enable-omx \
+      --enable-omx-rpi \
+      --enable-indev=v4l2 \
+      --enable-protocol=pipe \
+      --enable-muxer=mp4 \
+      --enable-muxer=mpegts \
+      --enable-demuxer=mpegts
+  else
+    ./configure --enable-gpl \
+        --enable-nonfree \
+        --pkg-config-flags="--static" \
+        --disable-ffplay \
+        --disable-doc \
+        --enable-libx264
+    # --disable-network
+    # --disable-all
+  fi
+
+  # make -j ffmpeg ffprobe ?
   make -j
   # TODO(maruel): Install locally.
   sudo make install
@@ -125,11 +143,26 @@ function install_ffmpeg {
   echo "- Installed FFMpeg"
 }
 
+function install_mp4box() {
+  VERSION=v0.7.1
+  echo "Installing MP4box $VERSION to split the MPEG2TS stream into 1 second chunks"
+  git clone https://github.com/gpac/gpac -b $VERSION --depth 1
+  cd gpac
+  time ./configure --disable-opengl --use-js=no --use-ft=no --use-jpeg=no \
+    --use-png=no --use-faad=no --use-mad=no --use-xvid=no --use-ffmpeg=no \
+    --use-ogg=no --use-vorbis=no --use-theora=no --use-openjpeg=no \
+    --static-mp4box
+  # RPi Zero: 62min
+  time make bin/gcc/MP4Box
+  cd ..
+}
+
 prerequisites
 #clean
 install_nasm
 install_x264
 install_ffmpeg
+# install_mp4box
 
 echo "- Success!"
 ffmpeg -version
