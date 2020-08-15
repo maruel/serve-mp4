@@ -18,7 +18,7 @@ import (
 	"strings"
 
 	"github.com/kr/pretty"
-	"github.com/maruel/panicparse/stack/webstack"
+	"github.com/maruel/panicparse/v2/stack/webstack"
 	"github.com/maruel/serve-dir/loghttp"
 	"github.com/maruel/serve-mp4/vid"
 )
