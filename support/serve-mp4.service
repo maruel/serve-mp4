@@ -1,0 +1,17 @@
+# https://github.com/maruel/serve-mp4
+[Unit]
+Description=Runs serve-mp4 automatically upon boot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=USER
+Group=USER
+KillMode=mixed
+Restart=always
+TimeoutStopSec=600s
+ExecStart=/PATH/TO/go/bin/serve-mp4 -root /PATH/TO/Videos -http :7899
+Environment=GOTRACEBACK=all
+
+[Install]
+WantedBy=default.target
