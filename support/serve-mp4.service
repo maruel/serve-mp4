@@ -1,16 +1,20 @@
-# https://github.com/maruel/serve-mp4
+# Copyright 2022 Marc-Antoine Ruel. All rights reserved.
+# Use of this source code is governed under the Apache License, Version 2.0
+# that can be found in the LICENSE file.
+
+# See https://github.com/maruel/serve-mp4 for more information.
+
 [Unit]
 Description=Runs serve-mp4 automatically upon boot
 Wants=network-online.target
-After=network-online.target
 
 [Service]
-User=USER
-Group=USER
+Type=simple
 KillMode=mixed
 Restart=always
 TimeoutStopSec=600s
-ExecStart=/PATH/TO/go/bin/serve-mp4 -root /PATH/TO/Videos -http :7899
+ExecStart=%h/go/bin/serve-mp4 -root /PATH/TO/Videos -http :7899
+ExecStop=/bin/kill -s INT $MAINPID
 Environment=GOTRACEBACK=all
 
 [Install]
