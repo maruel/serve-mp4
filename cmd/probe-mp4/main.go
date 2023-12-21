@@ -11,7 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 
@@ -29,7 +29,7 @@ func mainImpl() error {
 	log.SetFlags(log.Lmicroseconds)
 	flag.Parse()
 	if !*verbose {
-		log.SetOutput(ioutil.Discard)
+		log.SetOutput(io.Discard)
 	}
 	if flag.NArg() != 1 {
 		return errors.New("expected a single file")

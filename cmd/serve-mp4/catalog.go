@@ -569,7 +569,6 @@ func (c *crawler) handleRefresh(refresh <-chan bool) {
 			select {
 			case <-refresh:
 			case <-delay:
-				break
 			}
 		}
 		if err := c.enumerateEntries(); err != nil {
@@ -615,10 +614,10 @@ func (t *transcodingQueue) Close() error {
 		default:
 			t.queue <- nil
 			stop = true
-			break
 		}
 	}
 	t.mu.Lock()
+	//lint:ignore SA2001 I forget why
 	t.mu.Unlock()
 	return nil
 }
@@ -650,7 +649,7 @@ func (t *transcodingQueue) run() {
 		}
 		path := filepath.Join(t.c.cacheDir, toCachedPath(r.e.Rel, r.v))
 		t.mu.Lock()
-		err := r.v.TranscodeMP4(r.e.srcFile(), path, i, p)
+		err := r.v.Transcode(r.e.srcFile(), path, i, p)
 		t.mu.Unlock()
 
 		r.e.mu.Lock()

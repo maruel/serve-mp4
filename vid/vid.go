@@ -5,6 +5,9 @@
 // Package vid identifies and transcodes video files via ffprobe and ffmpeg.
 package vid
 
+//go:generate go install golang.org/x/tools/cmd/stringer@latest
+//go:generate stringer --type Device
+
 import (
 	"fmt"
 	"log"
@@ -129,22 +132,17 @@ const (
 	//  avi       | DVIX,MPEG4,XVID | MP3
 	//  3gp       | H264,MPEG4      | AAC,AMR-NB
 	ChromeOS
+
+	// WEBPWebPreview generates a web preview of the video in WEBP
+	WEBPWebPreview
 )
-
-const deviceName = "ChromeCastChromeCastUltraChromeOS"
-
-var deviceIndex = [...]uint8{0, 10, 25, 33}
-
-func (i Device) String() string {
-	i -= 1
-	if i < 0 || i >= Device(len(deviceIndex)-1) {
-		return fmt.Sprintf("Device(%d)", i+1)
-	}
-	return deviceName[deviceIndex[i]:deviceIndex[i+1]]
-}
 
 // supportedVideo returns true if this device supports this video codec.
 func (d Device) supportedVideo(codec string) bool {
+	// WEBPWebPreview always returns false for video since it's going to be transcoded.
+	if d == WEBPWebPreview {
+		return false
+	}
 	switch codec {
 	case "mpeg1video", "mpeg2video", "h264":
 		return true
@@ -161,6 +159,10 @@ func (d Device) supportedVideo(codec string) bool {
 
 // supportedAudio returns true if this device supports this audio codec.
 func (d Device) supportedAudio(codec string) bool {
+	// WEBPWebPreview always returns true for audio since it's ignored.
+	if d == WEBPWebPreview {
+		return true
+	}
 	switch codec {
 	case "ac3":
 		// ChromeOS doesn't support this, Cast does passthrough, which is fine
@@ -171,12 +173,15 @@ func (d Device) supportedAudio(codec string) bool {
 		return true
 	default:
 		// pcm_u8, wmav2
-		// Seems like ChromeCast doesn't support "dts"
+		// Seems like ChromeCast doesn't support "dts".
 		return false
 	}
 }
 
 func (d Device) ToContainer() string {
+	if d == WEBPWebPreview {
+		return "webp"
+	}
 	// TODO(maruel): Implement in the case of ChromeOS.
 	return "mp4"
 }
@@ -188,18 +193,33 @@ func (d Device) ToContainer() string {
 // The src file must have been analyzed via Identify() first.
 //
 // progress will be updated with progress information.
-func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int)) error {
+func (d Device) Transcode(src, dst string, v *Info, progress func(frame int)) error {
+	c := d.ToContainer()
 	args := []string{
 		"-i", src,
-		"-f", "mp4",
+		"-f", c,
+	}
+	if c == "mp4" {
 		// https://trac.ffmpeg.org/wiki/Encode/AAC#ProgressiveDownload
-		"-movflags", "+faststart",
+		args = append(args, "-movflags", "+faststart")
 		// TODO(maruel): Confirm.
-		"-map", fmt.Sprintf("0:%d", v.VideoIndex),
-		"-map", fmt.Sprintf("0:%d", v.AudioIndex),
+		args = append(args, "-map", fmt.Sprintf("0:%d", v.VideoIndex))
+		args = append(args, "-map", fmt.Sprintf("0:%d", v.AudioIndex))
 	}
 
-	if d.supportedVideo(v.VideoCodec) {
+	if d == WEBPWebPreview {
+		args = append(args,
+			"-itsoffset", "1:00",
+			"-itsscale", "2",
+			"-t", "30",
+			"-vcodec", "libwebp",
+			"-filter:v", "fps=fps=2",
+			"-lossless", "0", "-compression_level", "3",
+			"-loop", "1",
+			"-s", "320:-1")
+		// "-preset", "default",
+		// "-vsync", "0",
+	} else if d.supportedVideo(v.VideoCodec) {
 		// Video Copy.
 		args = append(args, "-c:v", "copy")
 	} else {
@@ -220,7 +240,10 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 		}
 	}
 
-	if d.supportedAudio(v.AudioCodec) {
+	if d == WEBPWebPreview {
+		// No audio.
+		args = append(args, "-an")
+	} else if d.supportedAudio(v.AudioCodec) {
 		// Audio copy.
 		args = append(args, "-c:a", "copy")
 	} else {
@@ -241,7 +264,7 @@ func (d Device) TranscodeMP4(src, dst string, v *Info, progress func(frame int))
 	args = append(args, dst)
 	dir := filepath.Dir(dst)
 	if i, err := os.Stat(dir); err != nil || !i.IsDir() {
-		if err := os.MkdirAll(dir, 0777); err != nil {
+		if err := os.MkdirAll(dir, 0o777); err != nil {
 			return fmt.Errorf("Transcode(%s, %s): %v", src, dst, err)
 		}
 	}

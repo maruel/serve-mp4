@@ -11,7 +11,7 @@ Requires [ffmpeg/ffprobe](https://ffmpeg.org/) to be installed. To install, run
 By default, it will prefer French audio tracks over others.
 
 ```
-go get -u -v github.com/maruel/serve-mp4/cmd/...
+go install github.com/maruel/serve-mp4/cmd/...@latest
 serve-mp4 -help
 serve-mp4 -root /mnt/foo/bar
 ```

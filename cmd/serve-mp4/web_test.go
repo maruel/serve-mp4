@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +29,7 @@ func TestWeb(t *testing.T) {
 	if err = os.Mkdir(a, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err = ioutil.WriteFile(filepath.Join(a, "b.mp4"), mp4, 0700); err != nil {
+	if err = os.WriteFile(filepath.Join(a, "b.mp4"), mp4, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,7 +88,8 @@ func get(t *testing.T, port, url string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ioutil.ReadAll(resp.Body); err != nil {
+	if _, err = io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
 	}
 	if err = resp.Body.Close(); err != nil {
 		t.Fatal(err)
@@ -109,7 +110,8 @@ func post(t *testing.T, port, url string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ioutil.ReadAll(resp.Body); err != nil {
+	if _, err = io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
 	}
 	if err = resp.Body.Close(); err != nil {
 		t.Fatal(err)
@@ -119,9 +121,7 @@ func post(t *testing.T, port, url string) {
 	}
 }
 
-//
 // python -c "import base64,urllib;a=base64.b64encode(urllib.urlopen('https://github.com/mathiasbynens/small/raw/master/mp4.mp4').read()); print '\n'.join(a[i:i+70] for i in range(0,len(a),70))"
-//
 const mp4Base64 = `
 AAAAHGZ0eXBpc29tAAACAGlzb21pc28ybXA0MQAAAAhmcmVlAAAAGm1kYXQAAAGzABAHAA
 ABthBgUYI9t+8AAAMNbW9vdgAAAGxtdmhkAAAAAMXMvvrFzL76AAAD6AAAACoAAQAAAQAA

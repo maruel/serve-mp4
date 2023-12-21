@@ -6,7 +6,7 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"testing"
@@ -15,13 +15,13 @@ import (
 func TestMain(m *testing.M) {
 	flag.Parse()
 	if !testing.Verbose() {
-		log.SetOutput(ioutil.Discard)
+		log.SetOutput(io.Discard)
 	}
 	os.Exit(m.Run())
 }
 
 func tmpDir(t *testing.T) (string, func()) {
-	d, err := ioutil.TempDir("", "serve-mp4")
+	d, err := os.MkdirTemp("", "serve-mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
