@@ -60,6 +60,10 @@ func Identify(src string, lang string) (*Info, error) {
 	for i, s := range out.Raw.Streams {
 		switch s.CodecType {
 		case "video":
+			if s.Tags["mimetype"] == "image/jpeg" {
+				// Likely a cover.jpeg.
+				continue
+			}
 			videos = append(videos, i)
 		case "audio":
 			if s.CodecName != "" {
@@ -71,7 +75,7 @@ func Identify(src string, lang string) (*Info, error) {
 			return nil, fmt.Errorf("Identify(%s): unknown stream %q", src, s.CodecType)
 		}
 	}
-	// Choose the prefered stream based on preferences.
+	// Choose the preferred stream based on preferences.
 	if len(videos) > 1 {
 		return nil, fmt.Errorf("Identify(%s): too many video streams", src)
 	}
