@@ -6,27 +6,69 @@
 # See for full info:
 # https://trac.ffmpeg.org/wiki/CompilationGuide
 # https://trac.ffmpeg.org/wiki/CompilationGuide/Ubuntu
+# Took inspiration from
+# https://github.com/alicemara/ffmpegcompileqsvav1/blob/main/ffmpegcompileqsvav1.sh
 
 set -eu
 
 cd "$(dirname $0)"
 
+OUT="$HOME/ffmpeg_build"
+
 # On non-Raspbian:
 # - sudo usermod -a -G video $USER
 # - sudo apt install v4l-utils
+# - sudo apt install libvpl-dev
 # - sudo apt-get install yasm
 # On Raspbian:
 # - sudo raspi-config nonint do_camera 0
 function prerequisites {
+  sudo apt remove ffmpeg
+
   sudo apt install \
-      autoconf \
-      asciidoc \
-      automake \
-      build-essential \
-      cmake \
-      yasm
-  # These are always certainly too old.
-  sudo apt -y remove libx264-dev nasm
+    --no-install-recommends \
+    autoconf \
+    asciidoc \
+    automake \
+    build-essential \
+    cmake \
+    meson \
+    nasm \
+    ninja-build \
+    pkg-config \
+    texinfo \
+    wget \
+    yasm
+
+  # These are always certainly too old but let's roll with it for now.
+  #sudo apt -y remove libx264-dev nasm
+
+  sudo apt install \
+    --no-install-recommends \
+    libaom-dev \
+    libass-dev \
+    libdav1d-dev \
+    libfdk-aac-dev \
+    libfreetype6-dev \
+    libgnutls28-dev \
+    libmp3lame-dev \
+    libnuma-dev \
+    libopus-dev \
+    libsdl2-dev \
+    libtool \
+    libunistring-dev \
+    libva-dev \
+    libvdpau-dev \
+    libvorbis-dev \
+    libvpl2 \
+    libvpl-dev \
+    libvpx-dev \
+    libx264-dev \
+    libx265-dev \
+    libxcb-shm0-dev \
+    libxcb-xfixes0-dev \
+    libxcb1-dev \
+    zlib1g-dev
 }
 
 function clean {
@@ -54,10 +96,14 @@ function install_nasm {
   # 'nasm-2.13.01' as of this writting.
   git checkout $(git tag | grep '^nasm-' | grep -v rc | sort -h | tail -n 1)
   ./autogen.sh
-  ./configure
+  ./configure \
+    --bindir="$HOME/bin" \
+    --prefix="$OUT" \
+    --pkg-config-flags="--static" \
+    --extra-cflags="-I$OUT/include" \
+    --extra-ldflags="-L$OUT/lib"
   make -j all manpages
-  # TODO(maruel): Install locally.
-  sudo make install
+  make install
   hash -r
   cd ..
   echo "- Installed $(nasm -v)"
@@ -68,21 +114,53 @@ function install_x264 {
     echo "- Found x264"
     #return 0
   fi
-  checkout_or_fetch git://git.videolan.org/x264.git x264
+  checkout_or_fetch https://code.videolan.org/videolan/x264.git x264
   # x264 doesn't use git tag, so ¯\_(ツ)_/¯. 'stable' is a bit old.
   # git log origin/stable..origin/master
-  # -b stable
   # Hardcode so the build process is reproducible.
-  # 7d0ff22e8 is from Jan 2018.
-  git checkout 7d0ff22e8c96de126be9d3de4952edd6d1b75a8c
-  ./configure --enable-static --enable-shared
+  # This is branch "stable" as of 2023-12-30:
+  git checkout -b 31e19f92f00c7003fa115047ce50978bc98c3a0d
+  ./configure \
+    --bindir="$HOME/bin" \
+    --prefix="$OUT" \
+    --pkg-config-flags="--static" \
+    --extra-cflags="-I$OUT/include" \
+    --extra-ldflags="-L$OUT/lib" \
+    --enable-static \
+    --enable-shared
   make -j
-  # TODO(maruel): Install locally.
-  sudo make install
-  sudo ldconfig
+  make install
   cd ..
   echo "- Installed x264"
 }
+
+function install_aom {
+  checkout_or_fetch https://aomedia.googlesource.com/aom aom
+  mkdir -p aom_build
+  cd aom_build
+  PATH="$HOME/bin:$PATH" cmake -G "Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX="$OUT" -DENABLE_TESTS=OFF \
+    -DENABLE_NASM=on ../aom
+  PATH="$HOME/bin:$PATH" make && make install
+  cd ..
+  echo "- Installed aom"
+}
+
+function install_av1 {
+  checkout_or_fetch https://gitlab.com/AOMediaCodec/SVT-AV1.git SVT-AV1
+  # Recent tag as of 2013-12.
+  git checkout v1.8.0
+  mkdir -p build
+  cd build
+  PATH="$HOME/bin:$PATH" cmake -G "Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX="$OUT" -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_DEC=OFF -DBUILD_SHARED_LIBS=OFF ..
+  PATH="$HOME/bin:$PATH" make
+  make install
+  cd ..
+  echo "- Installed av1"
+}
+
 
 function install_ffmpeg {
   if command -v ffmpeg >/dev/null 2>&1 ; then
@@ -93,7 +171,7 @@ function install_ffmpeg {
   fi
   checkout_or_fetch https://github.com/ffmpeg/FFMpeg FFMpeg
   # Use the latest release as FFMpeg uses proper git tag.
-  # 'n4.0.2' as of this writing.
+  # 'n6.1' as of this writing.
   git checkout $(git tag | grep -v dev | grep '^n' | sort -h | tail -n 1)
 
   # List of ./configure flags:
@@ -113,7 +191,10 @@ function install_ffmpeg {
   if false; then
     # On Raspbian, we want to use the OMX encoder for performance and strip the
     # compile as much as possible because it is very slow.
-    ./configure --enable-gpl \
+    ./configure \
+      --bindir="$HOME/bin" \
+      --prefix="$OUT" \
+      --enable-gpl \
       --enable-nonfree \
       --disable-everything \
       --enable-omx \
@@ -124,20 +205,41 @@ function install_ffmpeg {
       --enable-muxer=mpegts \
       --enable-demuxer=mpegts
   else
-    ./configure --enable-gpl \
-        --enable-nonfree \
-        --pkg-config-flags="--static" \
-        --disable-ffplay \
-        --disable-doc \
-        --enable-libx264
+    # Don't enable too much to improve performance.
+    ./configure \
+      --bindir="$HOME/bin" \
+      --prefix="$OUT" \
+      --pkg-config-flags="--static" \
+      --extra-cflags="-I$OUT/include" \
+      --extra-ldflags="-L$OUT/lib" \
+      --extra-libs="-lpthread -lm" \
+      --ld="g++" \
+      --disable-ffplay \
+      --disable-doc \
+      --enable-gnutls \
+      --enable-gpl \
+      --enable-libaom \
+      --enable-libass \
+      --enable-libdav1d \
+      --enable-libfdk-aac \
+      --enable-libfreetype \
+      --enable-libmp3lame \
+      --enable-libopus \
+      --enable-libvorbis \
+      --enable-libvpl \
+      --enable-libvpx \
+      --enable-libx264 \
+      --enable-libx265 \
+      --enable-nonfree
+      # TODO(maruel): Fix
+      #--enable-libsvtav1
     # --disable-network
     # --disable-all
   fi
 
   # make -j ffmpeg ffprobe ?
   make -j
-  # TODO(maruel): Install locally.
-  sudo make install
+  make install
   hash -r
   cd ..
   echo "- Installed FFMpeg"
@@ -159,8 +261,10 @@ function install_mp4box() {
 
 prerequisites
 #clean
-install_nasm
-install_x264
+#install_nasm
+#install_x264
+#install_aom
+install_av1
 install_ffmpeg
 # install_mp4box
 
