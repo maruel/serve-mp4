@@ -236,8 +236,18 @@ func (d Device) Transcode(src, dst string, v *Info, progress func(frame int)) er
 		switch d {
 		case ChromeCast, ChromeCastUltra:
 			// Transcode very fast. This creates large files but we don't care much
-			// here.
-			args = append(args, "-preset", "faster", "-crf", "21")
+			// here. We want to limit the bitrate.
+			args = append(args,
+				"-preset", "faster",
+				"-crf", "21",
+				"-level", "4.1",
+				// Make sure we don't use yuv420p10le / High 10.
+				"-pix_fmt", "yuv420p",
+				//"-x264opts", "vbv-bufsize=50000:vbv-maxrate=50000:nal-hrd=vb",
+				//"-b:v", "8M",
+				//"-maxrate", "8M",
+				//"-bufsize", "21M",
+			)
 		case ChromeOS:
 			// The file is meant to be stored on a device. Keep it small.
 			args = append(args, "-preset", "slow", "-crf", "21")

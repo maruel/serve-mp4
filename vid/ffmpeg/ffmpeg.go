@@ -178,11 +178,14 @@ func (p progressHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				} else {
 					log.Printf("%s: %v", l, err)
 				}
-			case "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_ms", "out_time", "dup_frames", "drop_frames", "speed", "progress":
+			case "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_ms", "out_time", "dup_frames", "drop_frames", "speed", "progress", "out_time_us":
 				// Known lines. We could handle these if desired.
 			default:
 				// Unknown line. Not a big deal.
+				//log.Printf("TODO: Add me: %s", parts[0])
 			}
+		} else {
+			log.Printf("Garbage: %q", l)
 		}
 		l = ""
 	}
